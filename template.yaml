@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: LoanAssist FastAPI backend (API Gateway + Lambda)
+
+Parameters:
+  KnowledgeBaseId:
+    Type: String
+    Default: ''
+    # TODO: provide your Bedrock Knowledge Base ID at deployment.
+  GuardrailId:
+    Type: String
+    Default: ''
+    # TODO: provide your Bedrock Guardrail ID at deployment.
+  AllowedOrigins:
+    Type: String
+    Default: http://localhost:3000
+
+Resources:
+  LoanAssistApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      # Re-publish API Gateway when CORS parameters change (not only when routes change).
+      AlwaysDeploy: true
+      Cors:
+        AllowOrigin: !Sub "'${AllowedOrigins}'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Request-ID'"
+
+  LoanAssistFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src.lambda_handler.handler
+      Runtime: python3.11 # Matches the local virtual environment.
+      MemorySize: 1024
+      Timeout: 30
+      Tracing: Active
+      Environment:
+        Variables:
+          BEDROCK_KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
+          BEDROCK_GUARDRAIL_ID: !Ref GuardrailId
+          BEDROCK_GUARDRAIL_VERSION: DRAFT
+          ALLOWED_ORIGINS: !Ref AllowedOrigins
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoanAssistApi
+            Path: /{proxy+}
+            Method: ANY
+      Policies:
+        # Scope these permissions to model/KB/guardrail ARNs after IDs are known.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:Converse
+                # Converse authorization also requires InvokeModel on the selected model.
+                - bedrock:InvokeModel
+                # Required when BEDROCK_GUARDRAIL_ID is configured for Converse.
+                - bedrock:ApplyGuardrail
+              Resource: '*'
+            - Effect: Allow
+              Action: bedrock:Retrieve
+              Resource: '*'
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${LoanAssistApi}.execute-api.${AWS::Region}.amazonaws.com/prod

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LoanAssist AI</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <main class="chat-shell">
+      <header class="app-header">
+        <div class="brand-mark">LA</div>
+        <div><h1>LoanAssist AI</h1><p>Loan process and policy support</p></div>
+        <span class="status"><i></i>Online</span>
+      </header>
+      <section id="chatMessages" class="messages" aria-live="polite">
+        <article class="message assistant"><div class="bubble">Hi! I can help with loan process, documents, eligibility, and policies. How can I help?</div></article>
+      </section>
+      <form id="chatForm" class="composer">
+        <label class="sr-only" for="messageInput">Your message</label>
+        <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Ask about a loan process..." required></textarea>
+        <button id="sendButton" type="submit">Send</button>
+      </form>
+      <p class="note">AI responses are informational and do not guarantee loan approval.</p>
+    </main>
+    <script src="js/config.js"></script><script src="js/app.js"></script>
+  </body>
+</html>
