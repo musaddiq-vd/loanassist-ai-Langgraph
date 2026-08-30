@@ -681,43 +681,7 @@ Current implementation includes:
 
 ### Important production TODOs
 
-#### 1. Add Cognito authentication
-
-The current API does **not** use Cognito/JWT authentication.
-
-Production flow should be:
-
-```text
-User
- ↓
-Cognito
- ↓
-JWT
- ↓
-API Gateway Authorizer
- ↓
-Lambda
-```
-
-#### 2. Replace in-memory session memory
-
-Current memory:
-
-```python
-conversation_memory: dict[str, list[str]]
-```
-
-This is only suitable for a demo/prototype because Lambda execution environments are not a durable shared session store.
-
-Recommended production options:
-
-```text
-DynamoDB
-or
-Redis / ElastiCache
-```
-
-#### 3. Replace wildcard IAM resources
+#### 1. Replace wildcard IAM resources
 
 The current SAM template uses wildcard resources for Bedrock permissions to simplify deployment.
 
@@ -727,13 +691,13 @@ For production, restrict permissions to exact:
 - Knowledge Base ARN
 - Guardrail ARN
 
-#### 4. Secure customer details
+#### 2. Secure customer details
 
 Replace the placeholder customer-details tool with an authenticated CRM/core-banking API.
 
 Do not expose raw customer PII to the LLM.
 
-#### 5. Add CloudWatch alarms
+#### 3. Add CloudWatch alarms
 
 Recommended alarms:
 
@@ -744,7 +708,7 @@ Recommended alarms:
 - API Gateway 4XX
 - Bedrock throttling/error indicators
 
-#### 6. Optional custom domain
+#### 4. Optional custom domain
 
 For production, use a custom domain such as:
 
