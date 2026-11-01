@@ -383,10 +383,31 @@ Assumptions per chat message: Nova Lite ≈ 1,700 input + 320 output tokens (cle
 | | Where | What you get |
 |---|---|---|
 | **Golden-set evals** | [`evals/`](evals/) — locally and in **GitHub Actions** on every push/PR | 50 fixed questions (EMI, eligibility, policy, citations, salary slip, safety) with deterministic checks + an LLM judge. Fails the build on a regression. Current: **50/50, grounded 5/5, p50 1.8 s**. |
-| **Tracing** | **LangSmith** (optional) | Every request as a trace: LangGraph nodes → `kb_retrieve`, `nova_router`, `nova_answer_stream`… with per-step timings, inputs and outputs. |
+| **Tracing** | **LangSmith** — ✅ live on the deployed app | Every request as a trace: LangGraph nodes → `kb_retrieve`, `nova_router`, `nova_answer_stream`… with per-step timings, inputs and outputs. |
 | **Experiments** | **LangSmith** (`run_evals.py --langsmith`) | Each eval run as an experiment on the `loanassist-golden-set` dataset, compared side by side. |
 
 **Rule of thumb: gate quality in CI, look at timings and compare experiments in LangSmith.** The first eval run found real bugs (an LLM-typed EMI that didn't match the maths, invented `[n]` citations, mis-routed policy questions); fixing them took the score from 70% to 100%. See **[evals/README.md](evals/README.md)** for how to run it, add LangSmith and switch on the CI evals.
+
+### 🔭 LangSmith tracing (live)
+
+Tracing is switched on by one SSM parameter — no code or config change:
+
+| | |
+|---|---|
+| **Where** | [smith.langchain.com](https://smith.langchain.com) → **Projects** → **`loanassist-ai`** (eval runs go to `loanassist-ai-evals`) |
+| **What one trace shows** | `chat_stream` → `decide_action` (fast route or `nova_router`) → tool node (`kb_retrieve`, `nova_emi_tool`, `nova_read_document`…) → `nova_answer_stream`, each with its duration, inputs and outputs |
+| **Use it for** | finding the slow step (cold start, KB search, Nova), seeing which route a question took, and checking which passages fed a cited answer |
+| **Safe by design** | uploaded files are never sent (only format + size); if LangSmith is slow or down, a request waits at most 2 s for it |
+
+```powershell
+# turn on (or rotate the key) — the Lambda reads it on its next cold start
+aws ssm put-parameter --name /loanassist/langsmith-api-key --type SecureString --value "<your key>" --overwrite
+
+# turn off
+aws ssm delete-parameter --name /loanassist/langsmith-api-key
+```
+
+After changing the key, start a fresh Lambda (`.\deploy.ps1`, or update the function's description in the console) so it is picked up. Traces include users' questions and answers, so keep this on only if sending them to LangSmith is acceptable for your data.
 
 ## 🔌 API
 

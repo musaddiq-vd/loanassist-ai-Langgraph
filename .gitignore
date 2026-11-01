@@ -23,3 +23,6 @@ __pycache__/
 Thumbs.db
 # Eval run details (the markdown report, history and baseline are committed)
 evals/results/latest.json
+
+# Local notes for Claude Code (not pushed)
+CLAUDE.md
