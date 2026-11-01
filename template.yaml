@@ -1,47 +1,248 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: LoanAssist FastAPI backend (API Gateway + Lambda)
+Description: >-
+  LoanAssist AI - full stack in one deploy: Bedrock Knowledge Base (S3 Vectors),
+  Guardrail, Lambda + API Gateway backend, and S3 + CloudFront frontend.
 
 Parameters:
-  KnowledgeBaseId:
+  BedrockModelId:
     Type: String
-    Default: ''
-    # TODO: provide your Bedrock Knowledge Base ID at deployment.
-  GuardrailId:
+    Default: amazon.nova-lite-v1:0
+  EmbeddingModelId:
     Type: String
-    Default: ''
-    # TODO: provide your Bedrock Guardrail ID at deployment.
-  AllowedOrigins:
-    Type: String
-    Default: http://localhost:3000
+    Default: amazon.titan-embed-text-v2:0
 
 Resources:
+  # ---------------------------------------------------------------------------
+  # Knowledge Base: docs bucket -> Titan embeddings -> S3 Vectors index
+  # ---------------------------------------------------------------------------
+  DocsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  VectorBucket:
+    Type: AWS::S3Vectors::VectorBucket
+
+  VectorIndex:
+    Type: AWS::S3Vectors::Index
+    Properties:
+      VectorBucketArn: !GetAtt VectorBucket.VectorBucketArn
+      IndexName: loanassist-index
+      DataType: float32
+      Dimension: 1024
+      DistanceMetric: cosine
+      MetadataConfiguration:
+        # Bedrock stores chunk text/metadata here; keep them non-filterable
+        # so large chunks do not hit the filterable-metadata size limit.
+        NonFilterableMetadataKeys:
+          - AMAZON_BEDROCK_TEXT
+          - AMAZON_BEDROCK_METADATA
+
+  KnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: KnowledgeBaseAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt DocsBucket.Arn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${DocsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - s3vectors:GetIndex
+                  - s3vectors:PutVectors
+                  - s3vectors:GetVectors
+                  - s3vectors:DeleteVectors
+                  - s3vectors:QueryVectors
+                Resource: !GetAtt VectorIndex.IndexArn
+
+  KnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Sub ${AWS::StackName}-kb
+      RoleArn: !GetAtt KnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}
+          EmbeddingModelConfiguration:
+            BedrockEmbeddingModelConfiguration:
+              Dimensions: 1024
+      StorageConfiguration:
+        Type: S3_VECTORS
+        S3VectorsConfiguration:
+          VectorBucketArn: !GetAtt VectorBucket.VectorBucketArn
+          IndexArn: !GetAtt VectorIndex.IndexArn
+
+  KnowledgeBaseDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !GetAtt KnowledgeBase.KnowledgeBaseId
+      Name: loan-documents
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          BucketArn: !GetAtt DocsBucket.Arn
+
+  # ---------------------------------------------------------------------------
+  # Guardrail
+  # ---------------------------------------------------------------------------
+  Guardrail:
+    Type: AWS::Bedrock::Guardrail
+    Properties:
+      Name: !Sub ${AWS::StackName}-guardrail
+      BlockedInputMessaging: Sorry, I can't help with that request. Please ask a loan-related question.
+      BlockedOutputsMessaging: Sorry, I can't provide that response. Please contact a loan officer for help.
+      ContentPolicyConfig:
+        FiltersConfig:
+          - { Type: HATE, InputStrength: HIGH, OutputStrength: HIGH }
+          - { Type: INSULTS, InputStrength: HIGH, OutputStrength: HIGH }
+          - { Type: SEXUAL, InputStrength: HIGH, OutputStrength: HIGH }
+          - { Type: VIOLENCE, InputStrength: HIGH, OutputStrength: HIGH }
+          - { Type: MISCONDUCT, InputStrength: HIGH, OutputStrength: HIGH }
+          - { Type: PROMPT_ATTACK, InputStrength: HIGH, OutputStrength: NONE }
+
+  GuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier: !GetAtt Guardrail.GuardrailArn
+
+  # ---------------------------------------------------------------------------
+  # Chat history: one DynamoDB table, keyed by user
+  #   pk = USER#<cognito sub>
+  #   sk = CHAT#<chatId>                      (chat title + timestamps)
+  #   sk = MSG#<chatId>#<epoch ms>#<0|1>      (one item per message)
+  # ---------------------------------------------------------------------------
+  ChatsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  # ---------------------------------------------------------------------------
+  # Sign-in: Cognito user pool with managed login (email + password)
+  # ---------------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UserPoolTier: ESSENTIALS
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: false
+          RequireSymbols: false
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Sub ${AWS::StackName}-${AWS::AccountId}
+      ManagedLoginVersion: 2
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub ${AWS::StackName}-web
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub https://${Distribution.DomainName}/
+      LogoutURLs:
+        - !Sub https://${Distribution.DomainName}/
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  ManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    DependsOn: UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      UseCognitoProvidedValues: true
+
+  # ---------------------------------------------------------------------------
+  # Backend: API Gateway + Lambda (FastAPI)
+  # ---------------------------------------------------------------------------
   LoanAssistApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      # Re-publish API Gateway when CORS parameters change (not only when routes change).
-      AlwaysDeploy: true
-      Cors:
-        AllowOrigin: !Sub "'${AllowedOrigins}'"
-        AllowMethods: "'GET,POST,OPTIONS'"
-        AllowHeaders: "'Content-Type,Authorization,X-Request-ID'"
+      # No CORS needed: the browser calls the API through CloudFront (same origin).
+      # Every route needs a valid Cognito ID token, except /api/health.
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt UserPool.Arn
 
   LoanAssistFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
       Handler: src.lambda_handler.handler
-      Runtime: python3.11 # Matches the local virtual environment.
+      Runtime: python3.11
       MemorySize: 1024
       Timeout: 30
       Tracing: Active
       Environment:
         Variables:
-          BEDROCK_KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
-          BEDROCK_GUARDRAIL_ID: !Ref GuardrailId
-          BEDROCK_GUARDRAIL_VERSION: DRAFT
-          ALLOWED_ORIGINS: !Ref AllowedOrigins
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          BEDROCK_KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.KnowledgeBaseId
+          BEDROCK_GUARDRAIL_ID: !GetAtt Guardrail.GuardrailId
+          BEDROCK_GUARDRAIL_VERSION: !GetAtt GuardrailVersion.Version
+          CHATS_TABLE: !Ref ChatsTable
       Events:
         Api:
           Type: Api
@@ -49,21 +250,129 @@ Resources:
             RestApiId: !Ref LoanAssistApi
             Path: /{proxy+}
             Method: ANY
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref LoanAssistApi
+            Path: /api/health
+            Method: GET
+            Auth:
+              Authorizer: NONE
       Policies:
-        # Scope these permissions to model/KB/guardrail ARNs after IDs are known.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatsTable
         - Statement:
             - Effect: Allow
-              Action:
-                - bedrock:Converse
-                # Converse authorization also requires InvokeModel on the selected model.
-                - bedrock:InvokeModel
-                # Required when BEDROCK_GUARDRAIL_ID is configured for Converse.
-                - bedrock:ApplyGuardrail
-              Resource: '*'
+              # Converse calls are authorized as bedrock:InvokeModel.
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
             - Effect: Allow
               Action: bedrock:Retrieve
-              Resource: '*'
+              Resource: !GetAtt KnowledgeBase.KnowledgeBaseArn
+            - Effect: Allow
+              Action: bedrock:ApplyGuardrail
+              Resource: !GetAtt Guardrail.GuardrailArn
+
+  # ---------------------------------------------------------------------------
+  # Frontend: private S3 bucket + CloudFront (also proxies /api/* to the API)
+  # ---------------------------------------------------------------------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  FrontendOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-frontend-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${AWS::StackName} frontend and API
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !Sub ${LoanAssistApi}.execute-api.${AWS::Region}.amazonaws.com
+            # /api/v1/chat on CloudFront -> /prod/api/v1/chat on API Gateway
+            OriginPath: /prod
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # Managed-CachingOptimized
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewerExceptHostHeader
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
 
 Outputs:
+  CloudFrontUrl:
+    Description: Open this URL to use the app
+    Value: !Sub https://${Distribution.DomainName}
+  DistributionId:
+    Value: !Ref Distribution
+  FrontendBucket:
+    Value: !Ref FrontendBucket
+  DocsBucket:
+    Value: !Ref DocsBucket
+  KnowledgeBaseId:
+    Value: !GetAtt KnowledgeBase.KnowledgeBaseId
+  DataSourceId:
+    Value: !GetAtt KnowledgeBaseDataSource.DataSourceId
+  ChatsTable:
+    Value: !Ref ChatsTable
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Description: Managed login (sign-in / sign-up) base URL
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
   ApiUrl:
+    Description: Direct API Gateway URL (the frontend uses CloudFront /api instead)
     Value: !Sub https://${LoanAssistApi}.execute-api.${AWS::Region}.amazonaws.com/prod

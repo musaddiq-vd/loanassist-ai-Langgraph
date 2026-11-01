@@ -23,7 +23,7 @@ class BedrockService:
         self.agent_runtime = boto3.client("bedrock-agent-runtime", region_name=settings.aws_region, config=client_config)
 
     def retrieve(self, query: str) -> tuple[str, list[Source]]:
-        """Bedrock Knowledge Base retrieval (OpenSearch is normally its managed vector store)."""
+        """Bedrock Knowledge Base retrieval (vectors are stored in Amazon S3 Vectors)."""
         if not self.settings.bedrock_knowledge_base_id:
             logger.warning("Knowledge Base ID is not configured")
             return "", []

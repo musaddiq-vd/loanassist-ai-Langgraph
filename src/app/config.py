@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     bedrock_guardrail_id: str = ""
     # TODO: put your Guardrail ID in BEDROCK_GUARDRAIL_ID.
     bedrock_guardrail_version: str = "DRAFT"
+    # DynamoDB table for chat history. Empty = in-memory store (local development).
+    chats_table: str = ""
     allowed_origins: str = "http://localhost:3000"
     log_level: str = "INFO"
 
