@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     # Locally set AWS_REGION in .env. On Lambda, boto3 uses Lambda's managed region.
-    aws_region: str | None = None
+    aws_region: str = "us-east-1"  # Lambda sets AWS_REGION itself; this default keeps tests/CI working without AWS config
     bedrock_model_id: str = "amazon.nova-lite-v1:0"
     bedrock_knowledge_base_id: str = ""
     # TODO: put your Knowledge Base ID in BEDROCK_KNOWLEDGE_BASE_ID.
