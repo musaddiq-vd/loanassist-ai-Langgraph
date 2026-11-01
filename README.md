@@ -48,10 +48,11 @@
 | | |
 |---|---|
 | 🤖 **Agentic routing** | A LangGraph router sends each question to the right tool: document search, EMI calculator, eligibility check, customer lookup or a direct answer. |
-| 📚 **RAG over your documents** | Drop PDFs/DOCX/MD into `knowledge-base/`; they are embedded with Titan V2 and searched via a Bedrock Knowledge Base on **S3 Vectors**. |
-| 🧮 **EMI calculator** | Exact EMI maths, explained by the model. |
-| 🧑‍⚖️ **Human-in-the-loop** | Low CIBIL scores are flagged for loan-officer review — no automatic decisions. |
-| 🛡️ **Guardrails** | Bedrock Guardrails filter hate, insults, sexual content, violence, misconduct and prompt attacks. |
+| 📚 **RAG over your documents** | Drop PDFs/DOCX/MD into `knowledge-base/`; they are embedded with Titan V2, stored in **S3 Vectors** and filtered by loan type. |
+| 🧮 **Smart EMI calculator** | Nova tool-calling understands *50 lakh*, *1.2 crore*, *25 saal*, any word order and follow-ups like *"and for 15 years?"*; a rule-based parser backs it up. |
+| 🧑‍⚖️ **Human-in-the-loop** | Low CIBIL scores are flagged for loan-officer review — no automatic decisions. Only numbers written next to "CIBIL"/"credit score" count. |
+| 🛡️ **Guardrails** | Bedrock Guardrails filter hate, insults, sexual content, violence, misconduct and prompt attacks on the user's question and on every answer. |
+| ⚡ **Fast routing** | Clear EMI and CIBIL questions skip the LLM router entirely. |
 | 🔐 **Sign-in** | Email + password accounts with Amazon Cognito managed login. Every API call is checked by a Cognito authorizer. |
 | 🗂️ **History on every device** | Chats are saved per user in DynamoDB: open them on your phone or laptop, rename, search and delete. The agent also remembers earlier messages in the same chat. |
 | ✨ **Smart chat names** | Chats are named from the first question, e.g. *EMI · ₹50,00,000 at 8.5% for 20 yrs* or *Eligibility · CIBIL 620*. |
@@ -88,7 +89,10 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Q[Question] --> R{LLM Router}
+    Q[Question] --> FR{Fast route?<br/>EMI / CIBIL number}
+    FR -->|EMI| E
+    FR -->|CIBIL| EL
+    FR -->|no| R{LLM Router}
     R -->|policy / documents| D[Retrieve from KB]
     R -->|EMI| E[Calculate EMI]
     R -->|eligibility| EL{CIBIL ≥ 650?}
@@ -137,7 +141,15 @@ Every message is its own item, so long chats never hit DynamoDB's 400 KB item li
 
 ### 2. Add your documents
 
-Put loan policy files (PDF, DOCX, MD, TXT…) in [`knowledge-base/`](knowledge-base/). A sample policy is included so the app works on the first deploy.
+Put loan policy files (PDF, DOCX, MD, TXT…) in [`knowledge-base/`](knowledge-base/). Sample policies are included so the app works on the first deploy.
+
+Tag each file with its loan type in a sidecar `<file>.metadata.json`, so a home-loan question only searches home-loan (and general) documents:
+
+```json
+{ "metadataAttributes": { "loan_type": "home" } }
+```
+
+Valid types: `home`, `personal`, `car`, `education`, `business`, `gold`, or `general` (applies to every question). Untagged files are still searched when no loan type is mentioned, and if a filtered search finds nothing the app retries without the filter.
 
 ### 3. Deploy
 
@@ -227,12 +239,12 @@ All prices are **us-east-1 on-demand**, as published by AWS at the time of writi
 
 ### Estimated monthly bill
 
-Assumptions per chat message: 2 Nova Lite calls (router + answer) ≈ 1,700 input + 320 output tokens, ≈ 8 Guardrail text units, ~3 s of Lambda at 1 GB, a KB search on about half of all messages, and ≈ 5 DynamoDB write units + 2 read units to save and load history. Users stay under Cognito's 10,000 free MAU.
+Assumptions per chat message: Nova Lite ≈ 1,700 input + 320 output tokens (clear EMI/CIBIL questions skip the router call; EMI questions add a small extraction call), ≈ 3 Guardrail text units (only the user's question + the answer are checked), ~3 s of Lambda at 1 GB, a KB search on about half of all messages, and ≈ 5 DynamoDB write units + 2 read units for history. Users stay under Cognito's 10,000 free MAU.
 
 | Resource | 1K chats / mo | 10K chats / mo | 100K chats / mo |
 |---|---:|---:|---:|
 | Nova Lite | $0.18 | $1.80 | $18.00 |
-| Guardrails | $1.20 | $12.00 | $120.00 |
+| Guardrails | $0.45 | $4.50 | $45.00 |
 | Titan embeddings (queries) | <$0.01 | <$0.01 | $0.02 |
 | S3 Vectors | <$0.01 | $0.02 | $0.13 |
 | Lambda | $0 *(free tier)* | $0 *(free tier)* | ~$1.00 |
@@ -242,7 +254,7 @@ Assumptions per chat message: 2 Nova Lite calls (router + answer) ≈ 1,700 inpu
 | DynamoDB | <$0.01 | $0.04 | $0.35 |
 | Cognito | $0 *(free tier)* | $0 *(free tier)* | $0 *(free tier)* |
 | CloudWatch Logs | $0 *(free tier)* | $0 *(free tier)* | ~$1.00 |
-| **Total (approx.)** | **≈ $1.40** | **≈ $14** | **≈ $140** |
+| **Total (approx.)** | **≈ $0.70** | **≈ $6.50** | **≈ $66** |
 
 > [!NOTE]
 > Chat history adds well under **1%** to the bill: DynamoDB is ~$0.35 even at 100K chats, and its storage stays inside the free 25 GB for a long time (~5 KB per message pair). Cognito is free up to 10,000 monthly active users; above that each extra user costs $0.015 (e.g. 20,000 users ≈ $150/month).
@@ -252,8 +264,9 @@ Assumptions per chat message: 2 Nova Lite calls (router + answer) ≈ 1,700 inpu
 
 ### Where the money goes and how to cut it
 
-- **Guardrails are ~85% of the bill.** Today the guardrail checks the whole prompt, including retrieved document text. Wrapping only the user's question in a `guardContent` block, so the guardrail skips the trusted KB context, would cut this cost by roughly 70–80%.
-- **Nova Lite** is the second-largest cost. Keep history and retrieved chunks short (`numberOfResults: 4` today) and cap `maxTokens`.
+- **Guardrails are the largest line (~70%) and already optimised.** Only the user's question is wrapped in `guardContent`; trusted context (KB text, tool output, history) is skipped, while the answer is still fully checked. This cut guardrail cost by ~60% (≈ 8 → 3 text units per message).
+- **The router is skipped** for clear EMI / CIBIL questions (rule-based fast path), saving one Nova call and ~1 s each.
+- **Nova Lite**: keep history and retrieved chunks short (4 chunks) and cap `maxTokens`.
 - Set a **CloudWatch log retention** period (e.g. 14 days) so logs don't pile up.
 - Create an **AWS Budget** alert, e.g. at $10/month.
 
@@ -295,7 +308,7 @@ Document question:
 {
   "answer": "For a home loan you will need: ...",
   "session_id": "demo-001",
-  "sources": [{ "uri": "s3://.../sample-loan-policy.md", "excerpt": "..." }],
+  "sources": [{ "uri": "s3://.../home-loan.md", "excerpt": "..." }],
   "tool_used": "retrieve_loan_documents",
   "requires_human_review": false
 }
@@ -360,12 +373,13 @@ Locally there is **no sign-in**: `frontend/js/auth-config.js` is `null`, so the 
 ```text
 loanassist-ai/
 ├── frontend/              # Chat UI (index.html, css/, js/app.js, js/auth-config.js)
-├── knowledge-base/        # Documents ingested into the Knowledge Base
+├── knowledge-base/        # Documents + <file>.metadata.json loan-type tags
 ├── src/
 │   ├── lambda_handler.py  # Lambda entry point (Mangum)
 │   └── app/
 │       ├── main.py        # FastAPI routes
 │       ├── agent.py       # LangGraph state, tools and routing
+│       ├── loan_math.py   # EMI parsing/maths, CIBIL + loan-type detection, fast routing
 │       ├── config.py      # Environment settings
 │       ├── schemas.py     # Request / response models
 │       └── services/
@@ -374,7 +388,15 @@ loanassist-ai/
 ├── template.yaml          # All AWS infrastructure (SAM)
 ├── samconfig.toml         # Deploy defaults (no secrets)
 ├── deploy.ps1             # One-command deploy
+├── tests/                 # pytest unit tests (loan maths, CIBIL, routing)
 └── requirements.txt
+```
+
+Run the tests:
+
+```powershell
+pip install pytest
+python -m pytest -q tests
 ```
 
 ---
@@ -445,6 +467,7 @@ Run `.\deploy.ps1` again (it invalidates the cache), then hard-refresh with `Ctr
 - [x] Persistent chat history on every device (DynamoDB)
 - [ ] Amazon SES for sign-up emails (lift Cognito's ~50 emails/day limit)
 - [ ] Real CRM / core-banking integration for customer details (no raw PII to the LLM)
-- [ ] Guardrail on user input only (`guardContent`) to cut cost
+- [x] Guardrail on user input only (`guardContent`) to cut cost
+- [x] LLM tool-calling for EMI inputs, stricter CIBIL detection, loan-type filter
 - [ ] CloudWatch alarms, dashboard and log retention
 - [ ] Custom domain (ACM + Route 53) and optional AWS WAF

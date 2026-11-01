@@ -1,8 +1,17 @@
-import re
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from src.app.loan_math import (
+    calculate_emi as calculate_emi_amount,
+    detect_loan_type,
+    extract_cibil_score,
+    fast_route,
+    format_inr,
+    format_tenure,
+    parse_emi_inputs,
+    validate_emi_inputs,
+)
 from src.app.schemas import Source
 from src.app.services.bedrock import BedrockService
 
@@ -21,27 +30,53 @@ class LoanState(TypedDict, total=False):
 def build_loan_agent(bedrock: BedrockService):
     """Minimal agent flow: LLM router -> selected tool -> answer or human review."""
     def decide_action(state: LoanState) -> LoanState:
-        return {"action": bedrock.select_action(state["question"], state.get("history", []))}
+        # Clear-cut EMI / CIBIL questions skip the LLM router; everything else asks the model.
+        action = fast_route(state["question"]) or bedrock.select_action(state["question"], state.get("history", []))
+        return {"action": action}
 
     def retrieve_documents(state: LoanState) -> LoanState:
-        context, sources = bedrock.retrieve(state["question"])
+        # Narrow the search to the loan type being discussed (this question, else earlier in the chat).
+        loan_type = detect_loan_type(state["question"])
+        if not loan_type:
+            for line in reversed(state.get("history", [])):
+                if line.startswith("User:") and (loan_type := detect_loan_type(line)):
+                    break
+        context, sources = bedrock.retrieve(state["question"], loan_type)
         return {"context": context, "sources": sources, "tool_used": "retrieve_loan_documents"}
 
     def calculate_emi(state: LoanState) -> LoanState:
-        numbers = [float(value.replace(",", "")) for value in re.findall(r"\b\d[\d,]*(?:\.\d+)?\b", state["question"])]
-        if len(numbers) < 3:
-            return {"context": "EMI calculation needs loan amount, annual interest rate, and tenure in years.", "tool_used": "calculate_emi"}
-        principal, annual_rate, years = numbers[:3]
-        months = int(years * 12)
-        monthly_rate = annual_rate / 1200
-        emi = principal / months if monthly_rate == 0 else principal * monthly_rate * (1 + monthly_rate) ** months / ((1 + monthly_rate) ** months - 1)
-        return {"context": f"EMI estimate: principal ₹{principal:,.0f}, rate {annual_rate:g}% p.a., tenure {years:g} years, monthly EMI ₹{emi:,.2f}. This is an estimate; fees and final rates can change it.", "tool_used": "calculate_emi"}
+        question, history = state["question"], state.get("history", [])
+        # 1) LLM tool call (understands "50 lakh", any word order, follow-ups), validated for sane ranges.
+        raw = bedrock.extract_emi_params(question, history) or {}
+        inputs = validate_emi_inputs(raw.get("principal_inr"), raw.get("annual_rate_percent"), raw.get("tenure_months"))
+        # 2) Rule-based parser for anything the LLM missed: this question first, then earlier user messages.
+        inputs.fill_from(parse_emi_inputs(question))
+        for line in reversed(history):
+            if not inputs.missing():
+                break
+            if line.startswith("User:"):
+                inputs.fill_from(parse_emi_inputs(line))
+
+        missing = inputs.missing()
+        if missing:
+            return {"context": f"EMI calculation needs the {', '.join(missing)}. Ask the customer for it.", "tool_used": "calculate_emi"}
+
+        emi = calculate_emi_amount(inputs.principal, inputs.annual_rate, inputs.tenure_months)
+        total_interest = emi * inputs.tenure_months - inputs.principal
+        return {
+            "context": (
+                f"EMI estimate: principal {format_inr(inputs.principal)}, rate {inputs.annual_rate:g}% p.a., "
+                f"tenure {format_tenure(inputs.tenure_months)}, monthly EMI {format_inr(round(emi, 2))}, "
+                f"total interest {format_inr(round(total_interest))}. This is an estimate; fees and final rates can change it."
+            ),
+            "tool_used": "calculate_emi",
+        }
 
     def check_eligibility(state: LoanState) -> LoanState:
-        scores = [int(value) for value in re.findall(r"\b\d{3}\b", state["question"]) if 300 <= int(value) <= 900]
-        if not scores:
+        # Only a number written next to "CIBIL" / "credit score" counts (not "I earn 600 a day").
+        score = extract_cibil_score(state["question"])
+        if score is None:
             return {"context": "Please share your CIBIL score, monthly income, existing EMIs, requested amount, and tenure for a preliminary eligibility check.", "tool_used": "check_loan_eligibility"}
-        score = scores[0]
         if score < 650:
             return {"context": f"CIBIL score {score} is below the 650 review threshold.", "tool_used": "check_loan_eligibility", "requires_human_review": True}
         return {"context": f"CIBIL score {score} meets the basic 650 threshold. This is only a preliminary check; income, debt-to-income ratio, documents, and policy verification are still required.", "tool_used": "check_loan_eligibility"}
