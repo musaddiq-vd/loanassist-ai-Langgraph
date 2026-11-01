@@ -54,6 +54,7 @@
   <div class="chips">
     <div class="chip">💸 <b>≈ $6.50</b> / 10K chats</div>
     <div class="chip">😴 <b>≈ $0</b> when idle</div>
+    <div class="chip">⚡ <b>streamed</b> answers</div>
     <div class="chip">🚀 <b>.\deploy.ps1</b></div>
   </div>
 
@@ -69,7 +70,7 @@
   <!-- Edge & auth -->
   <div class="node auth" id="cognito" style="left:275px;top:195px;width:220px"><div class="ic">🔐</div><div><h3>Cognito</h3><p>Managed login · PKCE<br/>10K users/month free</p></div></div>
   <div class="node edge" id="cf" style="left:275px;top:430px;width:200px"><div class="ic">🌐</div><div><h3>CloudFront</h3><p>HTTPS · one domain</p></div></div>
-  <div class="node auth" id="apigw" style="left:520px;top:430px;width:180px"><div class="ic">🛂</div><div><h3>API Gateway</h3><p>Cognito authorizer</p></div></div>
+  <div class="node auth" id="apigw" style="left:520px;top:430px;width:180px"><div class="ic">🛂</div><div><h3>API Gateway</h3><p>Cognito auth · streaming</p></div></div>
   <div class="node data" id="s3web" style="left:520px;top:650px;width:180px"><div class="ic">🗂️</div><div><h3>S3</h3><p>Chat UI (private, OAC)</p></div></div>
 
   <!-- Lambda: agent flow -->
@@ -79,17 +80,17 @@
   <div class="node small compute" id="temi" style="left:975px;top:350px;width:170px"><div class="ic">🧮</div><div><h3>EMI calculator</h3><p>tool-calling</p></div></div>
   <div class="node small compute" id="tel" style="left:795px;top:425px;width:170px"><div class="ic">✅</div><div><h3>Eligibility</h3><p>CIBIL check</p></div></div>
   <div class="node small compute" id="tcust" style="left:975px;top:425px;width:170px"><div class="ic">🪪</div><div><h3>CRM lookup</h3><p>placeholder</p></div></div>
-  <div class="node small compute" id="gen" style="left:795px;top:520px;width:350px"><div class="ic">✍️</div><div><h3>Generate answer</h3><p>Nova Lite + guardrail · saved to history</p></div></div>
+  <div class="node small compute" id="gen" style="left:795px;top:520px;width:350px"><div class="ic">✍️</div><div><h3>Stream the answer ⚡</h3><p>word by word · guardrail · saved with time + 👍👎</p></div></div>
   <div class="node small warn" id="human" style="left:795px;top:610px;width:350px"><div class="ic" style="background:#d98a2b">🧑‍⚖️</div><div><h3>Human review</h3><p>CIBIL &lt; 650 → loan officer · never auto-approve/reject</p></div></div>
-  <div class="node small ops" id="tests" style="left:795px;top:705px;width:350px"><div class="ic">🧪</div><div><h3>43 unit tests</h3><p>loan maths · CIBIL · routing</p></div></div>
+  <div class="node small compute" id="docchk" style="left:795px;top:700px;width:350px"><div class="ic">📎</div><div><h3>Salary slip / statement check</h3><p>Nova reads income → debt-to-income → max loan</p></div></div>
 
   <!-- Bedrock -->
-  <div class="node ai" id="nova" style="left:1240px;top:190px;width:185px"><div class="ic">🤖</div><div><h3>Nova Lite</h3><p>router · EMI tool · answer</p></div></div>
+  <div class="node ai" id="nova" style="left:1240px;top:190px;width:185px"><div class="ic">🤖</div><div><h3>Nova Lite</h3><p>router · tools · reads PDFs</p></div></div>
   <div class="node ai" id="guard" style="left:1440px;top:190px;width:180px"><div class="ic">🛡️</div><div><h3>Guardrail</h3><p>question + answer only</p></div></div>
   <div class="node ai" id="titan" style="left:1240px;top:300px;width:380px"><div class="ic">🔢</div><div><h3>Titan Embeddings V2</h3><p>1024-dim vectors for documents and questions</p></div></div>
 
   <!-- Data -->
-  <div class="node data" id="ddb" style="left:1240px;top:490px;width:380px"><div class="ic">💬</div><div><h3>DynamoDB</h3><p>Chat history per user · synced on every device</p></div></div>
+  <div class="node data" id="ddb" style="left:1240px;top:490px;width:380px"><div class="ic">💬</div><div><h3>DynamoDB</h3><p>Chats · feedback · document facts — per user, every device</p></div></div>
   <div class="node data" id="kb" style="left:1240px;top:585px;width:205px"><div class="ic">🧠</div><div><h3>Knowledge Base</h3><p>loan_type filter</p></div></div>
   <div class="node data" id="vec" style="left:1460px;top:585px;width:160px"><div class="ic">📐</div><div><h3>S3 Vectors</h3><p>pay-per-use index</p></div></div>
   <div class="node data" id="docs" style="left:1240px;top:705px;width:380px"><div class="ic">📄</div><div><h3>S3 · loan documents</h3><p>home / personal / general + metadata.json tags</p></div></div>
@@ -107,9 +108,9 @@
       <li><span>4</span>Token checked, Lambda runs the agent</li>
       <li><span>5</span>Load + save chat history</li>
       <li><span>6</span>Filtered document search</li>
-      <li><span>7</span>Nova Lite answers through the guardrail</li>
+      <li><span>7</span>Nova Lite streams the answer through the guardrail</li>
     </ol>
-    <div>🧱 Infrastructure as code with AWS SAM · 🔒 least-privilege IAM · 📈 logs in CloudWatch · 🔁 safe to re-run <b>.\deploy.ps1</b></div>
+    <div>🧱 Infrastructure as code with AWS SAM · 🔒 least-privilege IAM · 📈 logs in CloudWatch · 🧪 54 pytest tests · 🔁 safe to re-run <b>.\deploy.ps1</b></div>
   </div>
 
 <script>

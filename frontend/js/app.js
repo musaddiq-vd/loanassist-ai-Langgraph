@@ -17,6 +17,8 @@ const form = $("#chatForm");
 const input = $("#messageInput");
 const messagesEl = $("#chatMessages");
 const sendButton = $("#sendButton");
+const attachButton = $("#attachButton");
+const fileInput = $("#fileInput");
 const scroller = $("#scroller");
 const thread = $("#thread");
 const historyEl = $("#history");
@@ -40,6 +42,9 @@ const ICONS = {
   check: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="m5 12 5 5 9-10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   doc: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z M14 3v5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
   edit: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
+  file: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+  thumbUp: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 11v9H4v-9h3Zm0 0 4-7a2 2 0 0 1 3 2l-1 4h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+  thumbDown: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M17 13V4h3v9h-3Zm0 0-4 7a2 2 0 0 1-3-2l1-4H6a2 2 0 0 1-2-2.3l1.2-6A2 2 0 0 1 7.2 4H17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -48,6 +53,8 @@ const TOOL_LABELS = {
   calculate_emi: "Used EMI calculator",
   check_loan_eligibility: "Checked eligibility",
   get_customer_details: "Looked up customer details",
+  document_question: "Read your document",
+  analyze_document: "Analysed your document",
 };
 
 /* =====================================================================
@@ -241,7 +248,8 @@ function inline(text) {
   return escapeHtml(text)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>");
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[\s(])_([^_\s][^_]*)_(?=$|[\s.,;:!?)])/g, "$1<em>$2</em>");
 }
 function renderMarkdown(source) {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
@@ -250,16 +258,31 @@ function renderMarkdown(source) {
   let para = [];
   let inCode = false;
   let code = [];
+  let table = [];
   const flushPara = () => { if (para.length) { html.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; } };
   const closeList = () => { if (list) { html.push(`</${list}>`); list = null; } };
+  const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  const flushTable = () => {
+    if (!table.length) return;
+    const isDivider = (row) => /^\|?\s*:?-{2,}/.test(row.trim());
+    const header = cells(table[0]);
+    const align = table[1] && isDivider(table[1]) ? cells(table[1]).map((c) => (c.endsWith(":") ? "right" : "left")) : [];
+    const body = table.slice(align.length ? 2 : 1).filter((r) => !isDivider(r));
+    const td = (tag, c, i) => `<${tag}${align[i] === "right" ? ' class="num"' : ""}>${inline(c)}</${tag}>`;
+    html.push(`<div class="table-wrap"><table><thead><tr>${header.map((c, i) => td("th", c, i)).join("")}</tr></thead><tbody>${
+      body.map((r) => `<tr>${cells(r).map((c, i) => td("td", c, i)).join("")}</tr>`).join("")}</tbody></table></div>`);
+    table = [];
+  };
 
   for (const line of lines) {
     if (line.trim().startsWith("```")) {
       if (inCode) { html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`); code = []; inCode = false; }
-      else { flushPara(); closeList(); inCode = true; }
+      else { flushPara(); closeList(); flushTable(); inCode = true; }
       continue;
     }
     if (inCode) { code.push(line); continue; }
+    if (line.trim().startsWith("|")) { flushPara(); closeList(); table.push(line); continue; }
+    flushTable();
     const heading = line.match(/^#{1,6}\s+(.*)$/);
     const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
     const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
@@ -275,6 +298,7 @@ function renderMarkdown(source) {
   if (inCode) html.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
   flushPara();
   closeList();
+  flushTable();
   return html.join("");
 }
 
@@ -412,46 +436,119 @@ async function deleteChat(id) {
 }
 
 /* =====================================================================
-   Chat view
+   Chat view: messages with time, day dividers, feedback and attachments
    ===================================================================== */
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const FULL_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+let lastDayLabel = null;
+
 function scrollToBottom(smooth = true) {
   scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
 }
+// While an answer streams in, follow it only if the reader is already near the bottom.
+function followStream() {
+  if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160) scrollToBottom(false);
+}
 
-function renderUser(text) {
+function dayLabel(ts) {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return "Today";
+  if (d.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return d.toLocaleDateString(undefined, {
+    weekday: "short", day: "numeric", month: "short",
+    year: d.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  });
+}
+function addDayDivider(ts) {
+  if (!ts) return;
+  const label = dayLabel(ts);
+  if (label === lastDayLabel) return;
+  lastDayLabel = label;
+  const el = document.createElement("div");
+  el.className = "day-divider";
+  const span = document.createElement("span");
+  span.textContent = label;
+  el.append(span);
+  messagesEl.append(el);
+}
+function timeElement(ts) {
+  const t = document.createElement("time");
+  t.className = "msg-time";
+  t.dateTime = new Date(ts).toISOString();
+  t.textContent = TIME_FMT.format(ts);
+  t.title = FULL_FMT.format(ts);
+  return t;
+}
+
+function renderUser(msg) {
   thread.classList.add("has-messages");
+  addDayDivider(msg.createdAt);
   const el = document.createElement("article");
   el.className = "msg user";
+  const wrap = document.createElement("div");
+  wrap.className = "user-wrap";
   const content = document.createElement("div");
-  content.className = "content";
-  content.textContent = text;
-  el.append(content);
+  const attachment = msg.data && msg.data.attachment;
+  if (attachment) {
+    content.className = "content attachment";
+    content.innerHTML = ICONS.file;
+    const info = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = attachment.filename;
+    const kind = document.createElement("span");
+    kind.textContent = attachment.content_type === "application/pdf" ? "PDF document" : "Image";
+    info.append(name, kind);
+    content.append(info);
+  } else {
+    content.className = "content";
+    content.textContent = msg.text;
+  }
+  wrap.append(content);
+  if (msg.createdAt) wrap.append(timeElement(msg.createdAt));
+  el.append(wrap);
   messagesEl.append(el);
 }
 
-function renderAssistantShell() {
+function renderAssistantShell(label = "") {
   const el = document.createElement("article");
   el.className = "msg assistant";
-  el.innerHTML = `<div class="avatar">${ICONS.avatar}</div><div class="body"><div class="thinking" aria-label="LoanAssist is thinking"><i></i><i></i><i></i></div></div>`;
+  el.innerHTML = `<div class="avatar">${ICONS.avatar}</div><div class="body"><div class="thinking" aria-label="LoanAssist is thinking"><i></i><i></i><i></i><span class="thinking-label"></span></div></div>`;
+  el.querySelector(".thinking-label").textContent = label;
   messagesEl.append(el);
   return el;
 }
 
-function fillAssistant(el, data, isError = false) {
+function startStreamingView(el, meta) {
   const body = el.querySelector(".body");
   body.innerHTML = "";
-  if (isError) el.classList.add("error");
+  if (meta.requires_human_review) body.append(reviewBadge());
+  const content = document.createElement("div");
+  content.className = "content streaming";
+  body.append(content);
+  return content;
+}
 
-  if (data.requires_human_review) {
-    const badge = document.createElement("div");
-    badge.className = "review-badge";
-    badge.textContent = "⚠ Sent for loan officer review";
-    body.append(badge);
-  }
+function reviewBadge() {
+  const badge = document.createElement("div");
+  badge.className = "review-badge";
+  badge.textContent = "⚠ Sent for loan officer review";
+  return badge;
+}
+
+// msg: { text, data, id, createdAt, feedback, error }
+function fillAssistant(el, msg, chatId) {
+  const data = msg.data || { answer: msg.text };
+  const body = el.querySelector(".body");
+  body.innerHTML = "";
+  if (msg.error) el.classList.add("error");
+  if (data.requires_human_review) body.append(reviewBadge());
 
   const content = document.createElement("div");
   content.className = "content";
-  content.innerHTML = renderMarkdown(data.answer || "");
+  content.innerHTML = renderMarkdown(data.answer || msg.text || "");
   body.append(content);
 
   const meta = document.createElement("div");
@@ -473,23 +570,74 @@ function fillAssistant(el, data, isError = false) {
     tag.textContent = TOOL_LABELS[data.tool_used];
     meta.append(tag);
   }
-  if (!isError) {
+  if (msg.createdAt) meta.append(timeElement(msg.createdAt));
+
+  if (!msg.error) {
     const copy = iconButton(ICONS.copy, "Copy answer");
     copy.addEventListener("click", async () => {
       try {
-        await navigator.clipboard.writeText(data.answer);
+        await navigator.clipboard.writeText(data.answer || msg.text);
         copy.innerHTML = ICONS.check;
         setTimeout(() => { copy.innerHTML = ICONS.copy; }, 1500);
       } catch { /* clipboard blocked */ }
     });
     meta.append(copy);
   }
+  if (!msg.error && msg.id && chatId) meta.append(feedbackButtons(msg, chatId));
   body.append(meta);
 }
 
-function renderAssistant(msg) {
+function feedbackButtons(msg, chatId) {
+  const group = document.createElement("span");
+  group.className = "feedback";
+  const up = iconButton(ICONS.thumbUp, "Good answer", "fb-up");
+  const down = iconButton(ICONS.thumbDown, "Bad answer", "fb-down");
+  const paint = () => {
+    up.classList.toggle("active", msg.feedback === "up");
+    down.classList.toggle("active", msg.feedback === "down");
+    up.setAttribute("aria-pressed", String(msg.feedback === "up"));
+    down.setAttribute("aria-pressed", String(msg.feedback === "down"));
+  };
+  const rate = async (rating) => {
+    const previous = msg.feedback || null;
+    const next = previous === rating ? null : rating; // clicking again clears it
+    msg.feedback = next || undefined;
+    paint();
+    saveChats();
+    try {
+      await apiJson(`/chats/${chatId}/messages/${msg.id}/feedback`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating: next }),
+      });
+      if (next) toast(next === "up" ? "Thanks for the feedback!" : "Thanks — we'll use this to improve.");
+    } catch {
+      msg.feedback = previous || undefined; // roll back
+      paint();
+      saveChats();
+      toast("Couldn't save feedback. Please try again.");
+    }
+  };
+  up.addEventListener("click", () => rate("up"));
+  down.addEventListener("click", () => rate("down"));
+  paint();
+  group.append(up, down);
+  return group;
+}
+
+function renderAssistant(msg, chatId) {
+  addDayDivider(msg.createdAt);
   const el = renderAssistantShell();
-  fillAssistant(el, msg.data || { answer: msg.text }, msg.error);
+  fillAssistant(el, msg, chatId);
+}
+
+let toastTimer = null;
+function toast(text) {
+  const el = $("#toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
 }
 
 async function openChat(id) {
@@ -497,6 +645,7 @@ async function openChat(id) {
   if (!chat) return;
   currentId = id;
   messagesEl.innerHTML = "";
+  lastDayLabel = null;
   chatTitleEl.textContent = chat.title;
   document.title = `${chat.title} · LoanAssist`;
   renderHistory();
@@ -520,8 +669,8 @@ async function openChat(id) {
 
   thread.classList.toggle("has-messages", chat.messages.length > 0);
   for (const m of chat.messages) {
-    if (m.role === "user") renderUser(m.text);
-    else renderAssistant(m);
+    if (m.role === "user") renderUser(m);
+    else renderAssistant(m, chat.id);
   }
   if (chat.pending) renderAssistantShell();
   scrollToBottom(false);
@@ -531,6 +680,7 @@ async function openChat(id) {
 function newChat() {
   currentId = null;
   messagesEl.innerHTML = "";
+  lastDayLabel = null;
   thread.classList.remove("has-messages");
   chatTitleEl.textContent = "New chat";
   document.title = "LoanAssist AI";
@@ -543,57 +693,34 @@ function newChat() {
 }
 
 /* =====================================================================
-   Sending
+   Sending (streamed answers)
    ===================================================================== */
-function updateSendState() { sendButton.disabled = busy || !input.value.trim(); }
+function updateSendState() {
+  sendButton.disabled = busy || !input.value.trim();
+  attachButton.disabled = busy;
+}
 function autoGrow() {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
   input.style.overflowY = input.scrollHeight > 200 ? "auto" : "hidden";
 }
 
-async function send(message) {
-  if (busy || !message) return;
-  busy = true;
-
-  // First message creates the chat and gives it a smart title.
+// Start (or reuse) the chat that a new message belongs to.
+function ensureChat(title) {
   let chat = getChat(currentId);
   const isNew = !chat;
   if (!chat) {
-    chat = { id: crypto.randomUUID(), title: makeTitle(message), messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    const now = Date.now();
+    chat = { id: crypto.randomUUID(), title, messages: [], createdAt: now, updatedAt: now };
     chats.push(chat);
     currentId = chat.id;
     chatTitleEl.textContent = chat.title;
     document.title = `${chat.title} · LoanAssist`;
   }
-  const chatId = chat.id;
-  chat.messages.push({ role: "user", text: message });
-  chat.updatedAt = Date.now();
-  chat.pending = true;
-  saveChats();
-  renderHistory();
+  return { chat, isNew };
+}
 
-  renderUser(message);
-  const shell = renderAssistantShell();
-  scrollToBottom();
-  input.value = "";
-  autoGrow();
-  updateSendState();
-
-  let reply;
-  try {
-    // The chat id is also the server-side history key, so follow-ups keep context.
-    // The server saves both messages; the title is only used for a brand-new chat.
-    const data = await apiJson("/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: chatId, title: isNew ? chat.title : undefined }),
-    });
-    reply = { role: "assistant", text: data.answer, data };
-  } catch (error) {
-    reply = { role: "assistant", text: `Sorry, I couldn't reach LoanAssist. ${error.message}`, error: true };
-  }
-
+function finishReply(chatId, shell, reply) {
   // The chat may have been deleted or switched away from while waiting.
   const target = getChat(chatId);
   if (target && target.messages) {
@@ -603,8 +730,8 @@ async function send(message) {
     saveChats();
   }
   if (currentId === chatId && shell.isConnected) {
-    fillAssistant(shell, reply.data || { answer: reply.text }, reply.error);
-    scrollToBottom();
+    fillAssistant(shell, reply, chatId);
+    followStream();
   } else if (currentId === chatId) {
     openChat(chatId);
   }
@@ -612,6 +739,165 @@ async function send(message) {
   updateSendState();
   renderHistory();
   input.focus();
+}
+
+// While text is still arriving, hide a "**" whose closing pair hasn't arrived yet.
+function tidyPartial(text) {
+  const pairs = (text.match(/\*\*/g) || []).length;
+  return pairs % 2 ? text.replace(/\*\*(?![\s\S]*\*\*)/, "") : text;
+}
+
+// Reads the NDJSON stream: {"type":"meta"} -> many {"type":"delta"} -> {"type":"done"}.
+async function streamReply(body, shell) {
+  const response = await apiFetch("/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok || !response.body) {
+    const error = new Error(`Request failed (${response.status})`);
+    error.fallback = true;
+    throw error;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let meta = {};
+  let text = "";
+  let done = null;
+  let contentEl = null;
+  let painting = false;
+  const paint = () => {
+    painting = false;
+    if (contentEl && shell.isConnected) { contentEl.innerHTML = renderMarkdown(tidyPartial(text)); followStream(); }
+  };
+  const handle = (line) => {
+    let event;
+    try { event = JSON.parse(line); } catch { const e = new Error("Unexpected response"); e.fallback = !text; throw e; }
+    if (event.type === "meta") meta = event;
+    else if (event.type === "delta") {
+      if (!contentEl && shell.isConnected) contentEl = startStreamingView(shell, meta);
+      text += event.text;
+      if (!painting) { painting = true; requestAnimationFrame(paint); }
+    } else if (event.type === "done") done = event;
+    else if (event.type === "error") throw new Error(event.detail || "Something went wrong");
+  };
+  for (;;) {
+    const { value, done: ended } = await reader.read();
+    if (ended) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (line) handle(line);
+    }
+  }
+  if (buffer.trim()) handle(buffer.trim());
+  if (!text) { const e = new Error("Empty answer"); e.fallback = true; throw e; }
+  return {
+    role: "assistant",
+    text,
+    data: { ...meta, answer: text },
+    id: done && done.message_id,
+    createdAt: (done && done.created_at) || Date.now(),
+  };
+}
+
+async function send(message) {
+  if (busy || !message) return;
+  busy = true;
+  const { chat, isNew } = ensureChat(makeTitle(message));
+  const chatId = chat.id;
+  const userMsg = { role: "user", text: message, createdAt: Date.now() };
+  chat.messages.push(userMsg);
+  chat.updatedAt = Date.now();
+  chat.pending = true;
+  saveChats();
+  renderHistory();
+
+  renderUser(userMsg);
+  const shell = renderAssistantShell();
+  scrollToBottom();
+  input.value = "";
+  autoGrow();
+  updateSendState();
+
+  // The chat id is also the server-side history key, so follow-ups keep context.
+  const body = { message, session_id: chatId, title: isNew ? chat.title : undefined };
+  let reply;
+  try {
+    reply = await streamReply(body, shell);
+  } catch (error) {
+    if (error.fallback) {
+      // Streaming unavailable: fall back to the regular (non-streamed) endpoint.
+      try {
+        const data = await apiJson("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        reply = { role: "assistant", text: data.answer, data, id: data.message_id, createdAt: data.created_at || Date.now() };
+      } catch (inner) {
+        reply = { role: "assistant", text: `Sorry, I couldn't reach LoanAssist. ${inner.message}`, error: true, createdAt: Date.now() };
+      }
+    } else {
+      reply = { role: "assistant", text: `Sorry, I couldn't reach LoanAssist. ${error.message}`, error: true, createdAt: Date.now() };
+    }
+  }
+  finishReply(chatId, shell, reply);
+}
+
+/* =====================================================================
+   Document upload: salary slip / bank statement -> income + eligibility
+   ===================================================================== */
+const MAX_UPLOAD = 4 * 1024 * 1024;
+const UPLOAD_TYPES = ["application/pdf", "image/png", "image/jpeg"];
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = () => reject(new Error("Could not read the file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadDocument(file) {
+  if (busy || !file) return;
+  if (!UPLOAD_TYPES.includes(file.type)) { toast("Please upload a PDF, PNG or JPG file."); return; }
+  if (file.size > MAX_UPLOAD) { toast("Please upload a file smaller than 4 MB."); return; }
+  busy = true;
+  const title = /statement/i.test(file.name) ? "Bank statement check" : "Salary slip check";
+  const { chat, isNew } = ensureChat(title);
+  const chatId = chat.id;
+  const userMsg = { role: "user", text: `📎 ${file.name}`, createdAt: Date.now(), data: { attachment: { filename: file.name, content_type: file.type } } };
+  chat.messages.push(userMsg);
+  chat.updatedAt = Date.now();
+  chat.pending = true;
+  saveChats();
+  renderHistory();
+  renderUser(userMsg);
+  const shell = renderAssistantShell("Reading your document…");
+  scrollToBottom();
+  updateSendState();
+
+  let reply;
+  try {
+    const data = await apiJson("/documents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        session_id: chatId,
+        title: isNew ? title : undefined,
+        filename: file.name,
+        content_type: file.type,
+        data_base64: await fileToBase64(file),
+      }),
+    });
+    const [savedUser, savedReply] = data.messages;
+    Object.assign(userMsg, { id: savedUser.id, createdAt: savedUser.createdAt });
+    reply = savedReply;
+  } catch (error) {
+    reply = { role: "assistant", text: `Sorry, I couldn't read that document. ${error.message}`, error: true, createdAt: Date.now() };
+  }
+  finishReply(chatId, shell, reply);
 }
 
 /* =====================================================================
@@ -655,7 +941,10 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value.trim()); }
 });
 form.addEventListener("submit", (e) => { e.preventDefault(); send(input.value.trim()); });
-document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => send(chip.dataset.prompt)));
+document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
+  if (chip.dataset.action === "upload") fileInput.click();
+  else send(chip.dataset.prompt);
+}));
 $("#newChat").addEventListener("click", () => { if (!busy) newChat(); });
 $("#topNewChat").addEventListener("click", () => { if (!busy) newChat(); });
 searchInput.addEventListener("input", renderHistory);
@@ -664,6 +953,14 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openSidebar(); searchInput.focus(); }
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); if (!busy) newChat(); }
 });
+
+attachButton.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => { const file = fileInput.files[0]; fileInput.value = ""; uploadDocument(file); });
+// Drag a file onto the message box to upload it.
+const composerWrap = $(".composer-wrap");
+composerWrap.addEventListener("dragover", (e) => { e.preventDefault(); composerWrap.classList.add("dragging"); });
+composerWrap.addEventListener("dragleave", () => composerWrap.classList.remove("dragging"));
+composerWrap.addEventListener("drop", (e) => { e.preventDefault(); composerWrap.classList.remove("dragging"); uploadDocument(e.dataTransfer.files[0]); });
 
 $("#signIn").addEventListener("click", () => startLogin(false));
 $("#signUp").addEventListener("click", () => startLogin(true));

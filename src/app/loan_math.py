@@ -144,6 +144,90 @@ def format_tenure(months: int) -> str:
     return f"{years} years {rest} months"
 
 
+# --------------------------------------------------------------------------- affordability (DTI / FOIR)
+
+FOIR_LIMIT = 0.50          # total EMIs may use at most 50% of net monthly income (policy)
+MIN_NET_INCOME = 25_000    # minimum monthly income for salaried applicants (policy)
+DEFAULT_RATE = 8.5         # used for "how much can I borrow" when no rate is given
+DEFAULT_MONTHS = 240       # 20 years
+
+
+def max_loan_for_emi(emi: float, annual_rate: float, months: int) -> float:
+    """Inverse of calculate_emi: the principal that a given EMI can repay."""
+    if emi <= 0:
+        return 0.0
+    monthly_rate = annual_rate / 1200
+    if monthly_rate == 0:
+        return emi * months
+    growth = (1 + monthly_rate) ** months
+    return emi * (growth - 1) / (monthly_rate * growth)
+
+
+@dataclass
+class Affordability:
+    net_income: float
+    existing_emis: float
+    current_dti: float            # existing EMIs / net income
+    max_new_emi: float            # room left under the FOIR limit
+    max_loan: float               # principal that max_new_emi can repay
+    annual_rate: float
+    months: int
+    meets_min_income: bool
+    requested_amount: float | None = None
+    requested_emi: float | None = None
+    dti_with_request: float | None = None
+    request_fits: bool | None = None
+
+
+def affordability(
+    net_income: float,
+    existing_emis: float = 0.0,
+    annual_rate: float | None = None,
+    months: int | None = None,
+    requested_amount: float | None = None,
+) -> Affordability:
+    rate = annual_rate or DEFAULT_RATE
+    tenure = months or DEFAULT_MONTHS
+    existing = max(existing_emis or 0.0, 0.0)
+    max_new_emi = max(net_income * FOIR_LIMIT - existing, 0.0)
+    result = Affordability(
+        net_income=net_income,
+        existing_emis=existing,
+        current_dti=existing / net_income if net_income else 1.0,
+        max_new_emi=max_new_emi,
+        max_loan=max_loan_for_emi(max_new_emi, rate, tenure),
+        annual_rate=rate,
+        months=tenure,
+        meets_min_income=net_income >= MIN_NET_INCOME,
+    )
+    if requested_amount:
+        emi = calculate_emi(requested_amount, rate, tenure)
+        result.requested_amount = requested_amount
+        result.requested_emi = emi
+        result.dti_with_request = (existing + emi) / net_income if net_income else 1.0
+        result.request_fits = result.dti_with_request <= FOIR_LIMIT
+    return result
+
+
+def describe_affordability(a: Affordability) -> str:
+    """Plain-text facts for the LLM context."""
+    lines = [
+        f"Monthly income for eligibility (before loan EMIs) {format_inr(round(a.net_income))}; existing EMIs {format_inr(round(a.existing_emis))} "
+        f"(debt-to-income {a.current_dti:.0%}).",
+        f"Policy: total EMIs up to {FOIR_LIMIT:.0%} of net income and minimum income {format_inr(MIN_NET_INCOME)} "
+        f"({'met' if a.meets_min_income else 'NOT met'}).",
+        f"Room for a new EMI: {format_inr(round(a.max_new_emi))}/month, which supports about "
+        f"{format_inr(round(a.max_loan, -3))} at {a.annual_rate:g}% for {format_tenure(a.months)}.",
+    ]
+    if a.requested_amount:
+        lines.append(
+            f"Requested {format_inr(a.requested_amount)}: EMI {format_inr(round(a.requested_emi))}, "
+            f"debt-to-income would be {a.dti_with_request:.0%} -> {'within' if a.request_fits else 'ABOVE'} the {FOIR_LIMIT:.0%} limit."
+        )
+    lines.append("This is a preliminary estimate; a loan officer makes the final decision.")
+    return " ".join(lines)
+
+
 # --------------------------------------------------------------------------- CIBIL
 
 _SCORE_WORDS = r"(?:cibil|credit\s*score|credit\s*rating|score)"
@@ -168,14 +252,22 @@ def extract_cibil_score(text: str) -> int | None:
 # --------------------------------------------------------------------------- fast routing
 
 
-def fast_route(question: str) -> str | None:
+def fast_route(question: str, has_documents: bool = False) -> str | None:
     """Obvious cases that don't need the LLM router (saves one model call + ~1 s).
 
+    - asks about the uploaded payslip / statement -> document_question (only if one was uploaded)
     - "EMI" plus at least one number      -> calculate_emi
     - a CIBIL / credit score number        -> check_loan_eligibility
     Everything else (incl. "what is EMI?", follow-ups) returns None -> LLM router.
     """
     lower = question.lower()
+    if has_documents and re.search(r"\b(eligib\w*|afford\w*|borrow|how much (loan|can i)|can i get)\b", lower):
+        return "check_loan_eligibility"  # uses the uploaded income for a debt-to-income check
+    if has_documents and re.search(
+        r"\b(salary slip|payslip|pay slip|bank statement|statement|document|uploaded|deductions?|allowances?|my (net |gross )?(income|salary))\b",
+        lower,
+    ):
+        return "document_question"
     if re.search(r"\bemi\b", lower) and re.search(r"\d", lower):
         return "calculate_emi"
     if extract_cibil_score(question) is not None:

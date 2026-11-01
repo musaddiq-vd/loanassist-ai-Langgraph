@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- Source for sample-salary-slip.pdf (fictional data, for testing the upload feature). -->
+<html><head><meta charset="utf-8"><title>Sample salary slip</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 40px; color: #222; font-size: 13px; }
+  .banner { background: #fde8e0; color: #8a3a1a; padding: 8px 12px; border-radius: 6px; font-weight: bold; margin-bottom: 18px; text-align: center; }
+  h1 { font-size: 20px; margin: 0; } .muted { color: #666; }
+  .head { display: flex; justify-content: space-between; border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+  td, th { border: 1px solid #bbb; padding: 6px 8px; } th { background: #f2f2f2; text-align: left; }
+  td.n { text-align: right; } .total td { font-weight: bold; background: #fafafa; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 30px; margin-bottom: 14px; }
+</style></head>
+<body>
+  <div class="banner">SAMPLE DOCUMENT — fictional data for testing LoanAssist AI</div>
+  <div class="head">
+    <div><h1>Acme Software Pvt Ltd</h1><div class="muted">Plot 12, Example Tech Park, Pune 411001</div></div>
+    <div style="text-align:right"><h1>Payslip</h1><div class="muted">October 2026</div></div>
+  </div>
+  <div class="grid">
+    <div><b>Employee name:</b> Priya Sharma</div><div><b>Employee ID:</b> ACM-10482</div>
+    <div><b>Designation:</b> Senior Software Engineer</div><div><b>Department:</b> Engineering</div>
+    <div><b>Date of joining:</b> 14 Jun 2021</div><div><b>Pay days:</b> 31</div>
+  </div>
+  <table>
+    <tr><th>Earnings</th><th>Amount (₹)</th><th>Deductions</th><th>Amount (₹)</th></tr>
+    <tr><td>Basic salary</td><td class="n">45,000</td><td>Provident Fund (EPF)</td><td class="n">5,400</td></tr>
+    <tr><td>House Rent Allowance</td><td class="n">22,500</td><td>Professional Tax</td><td class="n">200</td></tr>
+    <tr><td>Special Allowance</td><td class="n">18,000</td><td>Income Tax (TDS)</td><td class="n">6,400</td></tr>
+    <tr><td>Conveyance Allowance</td><td class="n">4,500</td><td>Car Loan EMI (HDFC)</td><td class="n">12,000</td></tr>
+    <tr class="total"><td>Gross earnings</td><td class="n">90,000</td><td>Total deductions</td><td class="n">24,000</td></tr>
+  </table>
+  <table><tr class="total"><td>Net pay (take-home)</td><td class="n">₹66,000</td></tr></table>
+  <p class="muted">Net pay credited to bank account on 31 Oct 2026. This is a computer-generated payslip.</p>
+</body></html>

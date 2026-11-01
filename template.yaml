@@ -215,56 +215,96 @@ Resources:
   # ---------------------------------------------------------------------------
   # Backend: API Gateway + Lambda (FastAPI)
   # ---------------------------------------------------------------------------
+  # REST API with response streaming: every route invokes Lambda with
+  # InvokeWithResponseStream (responseTransferMode STREAM), so answers can be
+  # streamed word by word. No CORS needed: the browser calls it through CloudFront.
   LoanAssistApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: prod
-      # No CORS needed: the browser calls the API through CloudFront (same origin).
-      # Every route needs a valid Cognito ID token, except /api/health.
-      Auth:
-        DefaultAuthorizer: CognitoAuth
-        Authorizers:
-          CognitoAuth:
-            UserPoolArn: !GetAtt UserPool.Arn
+      EndpointConfiguration:
+        Type: REGIONAL  # CloudFront already sits in front
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: !Sub ${AWS::StackName}-api
+          version: '1.2'
+        components:
+          securitySchemes:
+            CognitoAuth:
+              type: apiKey
+              name: Authorization
+              in: header
+              x-amazon-apigateway-authtype: cognito_user_pools
+              x-amazon-apigateway-authorizer:
+                type: cognito_user_pools
+                providerARNs:
+                  - !GetAtt UserPool.Arn
+        paths:
+          /api/health:
+            get:  # no sign-in
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${LoanAssistFunction.Arn}/response-streaming-invocations
+                responseTransferMode: STREAM
+          /{proxy+}:
+            x-amazon-apigateway-any-method:
+              security:
+                - CognitoAuth: []
+              parameters:
+                - name: proxy
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${LoanAssistFunction.Arn}/response-streaming-invocations
+                responseTransferMode: STREAM
 
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LoanAssistFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${LoanAssistApi}/*
+
+  # FastAPI runs under uvicorn via the AWS Lambda Web Adapter, which turns the
+  # app's streamed HTTP response into a Lambda response stream.
   LoanAssistFunction:
     Type: AWS::Serverless::Function
     Properties:
       CodeUri: .
-      Handler: src.lambda_handler.handler
+      Handler: run.sh
       Runtime: python3.11
       MemorySize: 1024
       Timeout: 30
       Tracing: Active
+      Layers:
+        - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
       Environment:
         Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          AWS_LWA_INVOKE_MODE: response_stream
+          AWS_LWA_PORT: '8000'
+          AWS_LWA_READINESS_CHECK_PATH: /health
           BEDROCK_MODEL_ID: !Ref BedrockModelId
           BEDROCK_KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.KnowledgeBaseId
           BEDROCK_GUARDRAIL_ID: !GetAtt Guardrail.GuardrailId
           BEDROCK_GUARDRAIL_VERSION: !GetAtt GuardrailVersion.Version
           CHATS_TABLE: !Ref ChatsTable
-      Events:
-        Api:
-          Type: Api
-          Properties:
-            RestApiId: !Ref LoanAssistApi
-            Path: /{proxy+}
-            Method: ANY
-        Health:
-          Type: Api
-          Properties:
-            RestApiId: !Ref LoanAssistApi
-            Path: /api/health
-            Method: GET
-            Auth:
-              Authorizer: NONE
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatsTable
         - Statement:
             - Effect: Allow
-              # Converse calls are authorized as bedrock:InvokeModel.
-              Action: bedrock:InvokeModel
+              # Converse = InvokeModel, ConverseStream = InvokeModelWithResponseStream.
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
               Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
             - Effect: Allow
               Action: bedrock:Retrieve

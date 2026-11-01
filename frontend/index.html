@@ -79,6 +79,7 @@
                 <button type="button" class="chip" data-prompt="Calculate EMI for a 5000000 loan at 8.5% for 20 years">🧮 Calculate an EMI</button>
                 <button type="button" class="chip" data-prompt="What is the eligibility criteria for a personal loan?">✅ Check eligibility</button>
                 <button type="button" class="chip" data-prompt="Explain the loan application process step by step">🗂️ Application process</button>
+                <button type="button" class="chip" data-action="upload">📎 Check my salary slip</button>
               </div>
             </section>
             <section id="chatMessages" class="messages" aria-live="polite"></section>
@@ -87,16 +88,22 @@
 
         <footer class="composer-wrap">
           <form id="chatForm" class="composer">
+            <button id="attachButton" class="attach-btn" type="button" title="Upload a salary slip or bank statement (PDF, PNG, JPG · max 4 MB)" aria-label="Upload a salary slip or bank statement">
+              <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <input id="fileInput" type="file" accept="application/pdf,image/png,image/jpeg" hidden />
             <label class="sr-only" for="messageInput">Your message</label>
             <textarea id="messageInput" rows="1" maxlength="4000" placeholder="Ask LoanAssist anything about loans…" required></textarea>
             <button id="sendButton" class="send-btn" type="submit" aria-label="Send message" disabled>
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg>
             </button>
           </form>
-          <p class="note">LoanAssist gives information only. It does not approve or reject loans.</p>
+          <p class="note">📎 Upload a salary slip or bank statement for an instant eligibility check · LoanAssist gives information only and never approves or rejects loans.</p>
         </footer>
       </div>
     </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <!-- ================= Sign-in screen ================= -->
     <div class="auth-gate" id="authGate" hidden>

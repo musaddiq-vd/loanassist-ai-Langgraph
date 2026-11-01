@@ -1,7 +1,9 @@
 import pytest
 
 from src.app.loan_math import (
+    affordability,
     calculate_emi,
+    max_loan_for_emi,
     detect_loan_type,
     extract_cibil_score,
     fast_route,
@@ -106,6 +108,27 @@ def test_extract_cibil_score(text, expected):
 ])
 def test_fast_route(text, expected):
     assert fast_route(text) == expected
+
+
+def test_fast_route_with_uploaded_document():
+    assert fast_route("What deductions are on my salary slip?", has_documents=True) == "document_question"
+    assert fast_route("Am I eligible for a 40 lakh loan?", has_documents=True) == "check_loan_eligibility"
+    assert fast_route("What deductions are on my salary slip?", has_documents=False) is None
+
+
+def test_affordability_foir():
+    a = affordability(72_000, 12_000, requested_amount=4_000_000)
+    assert round(a.current_dti, 3) == 0.167
+    assert a.max_new_emi == 24_000          # 50% of 72,000 minus 12,000
+    assert round(a.max_loan, -3) == 2_766_000  # what ₹24,000/month repays at 8.5% over 20 years
+    assert a.request_fits is False           # 40 lakh needs ~₹34,700 EMI -> 65% DTI
+    assert affordability(20_000).meets_min_income is False
+    assert affordability(30_000, 20_000).max_new_emi == 0
+
+
+def test_max_loan_is_inverse_of_emi():
+    emi = calculate_emi(5_000_000, 8.5, 240)
+    assert round(max_loan_for_emi(emi, 8.5, 240)) == 5_000_000
 
 
 @pytest.mark.parametrize("text, expected", [

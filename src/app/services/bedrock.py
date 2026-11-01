@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 import boto3
@@ -99,9 +100,10 @@ class BedrockService:
         """The LLM selects one allowed action; fallback keeps the API resilient."""
         router_prompt = """Choose exactly one action for the customer's loan query.
 Actions: retrieve_loan_documents, calculate_emi, check_loan_eligibility,
-get_customer_details, direct_answer. Return JSON only: {"action":"..."}.
+get_customer_details, document_question, direct_answer. Return JSON only: {"action":"..."}.
 Use documents for policy/process/documents questions; EMI for EMI calculations;
-eligibility for CIBIL/income/eligibility; customer details only when explicitly requested."""
+eligibility for CIBIL/income/eligibility/"how much can I borrow"; document_question for questions about
+the salary slip or bank statement the customer uploaded in this chat; customer details only when explicitly requested."""
         response = self.runtime.converse(
             modelId=self.settings.bedrock_model_id,
             system=[{"text": router_prompt}],
@@ -111,13 +113,13 @@ eligibility for CIBIL/income/eligibility; customer details only when explicitly 
         text = response["output"]["message"]["content"][0]["text"].strip()
         try:
             action = json.loads(text)["action"]
-            if action in {"retrieve_loan_documents", "calculate_emi", "check_loan_eligibility", "get_customer_details", "direct_answer"}:
+            if action in {"retrieve_loan_documents", "calculate_emi", "check_loan_eligibility", "get_customer_details", "document_question", "direct_answer"}:
                 return action
         except (json.JSONDecodeError, KeyError, TypeError):
             logger.warning("Invalid router response; using document retrieval", extra={"response": text})
         return "retrieve_loan_documents"
 
-    def generate(self, question: str, context: str, history: list[str] | None = None) -> str:
+    def _answer_request(self, question: str, context: str, history: list[str] | None, streaming: bool) -> dict[str, Any]:
         trusted_text = f"Recent conversation:\n{(history or [])[-4:]}\n\nTool / knowledge context:\n{context or 'No matching context found.'}\n\nCustomer question:"
         content: list[dict[str, Any]] = [{"text": f"{trusted_text} {question}"}]
         request: dict[str, Any] = {
@@ -135,5 +137,61 @@ eligibility for CIBIL/income/eligibility; customer details only when explicitly 
                 "guardrailIdentifier": self.settings.bedrock_guardrail_id,
                 "guardrailVersion": self.settings.bedrock_guardrail_version,
             }
-        response = self.runtime.converse(**request)
+            if streaming:
+                # "sync": each chunk is checked before it is sent, so nothing unsafe ever reaches the user.
+                request["guardrailConfig"]["streamProcessingMode"] = "sync"
+        return request
+
+    def generate(self, question: str, context: str, history: list[str] | None = None) -> str:
+        response = self.runtime.converse(**self._answer_request(question, context, history, streaming=False))
         return response["output"]["message"]["content"][0]["text"]
+
+    def generate_stream(self, question: str, context: str, history: list[str] | None = None) -> Iterator[str]:
+        """Yield the answer text in small pieces as Nova Lite writes it."""
+        response = self.runtime.converse_stream(**self._answer_request(question, context, history, streaming=True))
+        for event in response["stream"]:
+            delta = event.get("contentBlockDelta", {}).get("delta", {})
+            if delta.get("text"):
+                yield delta["text"]
+
+    def extract_income_document(self, data: bytes, file_format: str) -> dict[str, Any] | None:
+        """Read a salary slip / bank statement (PDF or image) and return the income facts via a strict tool."""
+        tool = {
+            "toolSpec": {
+                "name": "income_document",
+                "description": "Record the income facts found in a salary slip or bank statement.",
+                "inputSchema": {"json": {
+                    "type": "object",
+                    "properties": {
+                        "document_type": {"type": "string", "enum": ["salary_slip", "bank_statement", "other"]},
+                        "employer": {"type": "string", "description": "Employer / company name, if shown."},
+                        "period": {"type": "string", "description": "Month or date range covered, e.g. 'October 2026'."},
+                        "gross_monthly_income": {"type": "number", "description": "Gross monthly salary in rupees. Omit if not shown."},
+                        "net_monthly_income": {"type": "number", "description": "Take-home pay per month in rupees. For a bank statement, the average monthly salary credit."},
+                        "existing_emis_monthly": {"type": "number", "description": "Total monthly loan EMIs seen (salary deductions or recurring EMI debits). 0 if none."},
+                        "key_facts": {"type": "string", "description": "Up to 12 short bullet points with the document's important figures (allowances, deductions, credits, balances) for answering follow-up questions. Never include account numbers, PAN, Aadhaar, UAN or addresses."},
+                        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                    },
+                    "required": ["document_type", "key_facts", "confidence"],
+                }},
+            }
+        }
+        if file_format == "pdf":
+            source: dict[str, Any] = {"document": {"format": "pdf", "name": "uploaded-document", "source": {"bytes": data}}}
+        else:
+            source = {"image": {"format": file_format, "source": {"bytes": data}}}
+        prompt = (
+            "This is a customer's salary slip or bank statement. Read it carefully and record the income facts "
+            "with the income_document tool. Use rupee amounts as plain numbers. If something is not shown, omit it. "
+            "If the document is not a salary slip or bank statement, set document_type to 'other'."
+        )
+        response = self.runtime.converse(
+            modelId=self.settings.bedrock_model_id,
+            messages=[{"role": "user", "content": [source, {"text": prompt}]}],
+            toolConfig={"tools": [tool], "toolChoice": {"tool": {"name": "income_document"}}},
+            inferenceConfig={"maxTokens": 900, "temperature": 0},
+        )
+        for block in response["output"]["message"]["content"]:
+            if "toolUse" in block:
+                return block["toolUse"].get("input") or {}
+        return None

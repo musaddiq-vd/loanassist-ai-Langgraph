@@ -17,7 +17,7 @@
 
 <br/>
 
-<img src="docs/screenshots/chat-light.png" alt="LoanAssist chat with sidebar history, a markdown answer and a source chip" width="100%"/>
+<img src="docs/screenshots/chat-light.png" alt="LoanAssist analysing an uploaded salary slip: income, debt-to-income and estimated max loan" width="100%"/>
 
 </div>
 
@@ -30,8 +30,8 @@
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/welcome.png" alt="Welcome screen with suggestion prompts"/><br/><sub><b>Welcome</b> — suggestion prompts and chat history grouped by day</sub></td>
-    <td width="50%"><img src="docs/screenshots/chat-dark.png" alt="EMI follow-up conversation in dark mode"/><br/><sub><b>Dark mode</b> — EMI calculator with a follow-up that keeps context</sub></td>
+    <td width="50%"><img src="docs/screenshots/streaming.png" alt="Answer streaming word by word"/><br/><sub><b>Streaming</b> — answers appear word by word</sub></td>
+    <td width="50%"><img src="docs/screenshots/chat-dark.png" alt="EMI follow-up conversation in dark mode"/><br/><sub><b>Ask about your document</b> — debt-to-income check, time stamps and 👍👎 feedback (dark mode)</sub></td>
   </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/login.png" alt="Sign-in screen"/><br/><sub><b>Sign in</b> — Cognito accounts, history synced across devices</sub></td>
@@ -56,7 +56,11 @@
 | 🔐 **Sign-in** | Email + password accounts with Amazon Cognito managed login. Every API call is checked by a Cognito authorizer. |
 | 🗂️ **History on every device** | Chats are saved per user in DynamoDB: open them on your phone or laptop, rename, search and delete. The agent also remembers earlier messages in the same chat. |
 | ✨ **Smart chat names** | Chats are named from the first question, e.g. *EMI · ₹50,00,000 at 8.5% for 20 yrs* or *Eligibility · CIBIL 620*. |
-| 💬 **Clean chat UI** | Sidebar history, markdown answers, source chips, tool tags, copy button, suggestion prompts, light/dark toggle, mobile friendly. |
+| ⚡ **Streaming answers** | Answers appear word by word (Bedrock ConverseStream → API Gateway REST response streaming), with an automatic fallback to the normal endpoint. |
+| 📎 **Salary slip / bank statement check** | Upload a PDF or image; Nova Lite reads the income and EMIs, and LoanAssist shows debt-to-income, room for a new EMI and an estimated max loan. Ask follow-up questions about the document in the same chat. |
+| 👍 **Answer feedback** | Thumbs up/down on every answer, saved with the message for later evaluation. |
+| 🕒 **Timestamps** | Every message shows its time, with *Today / Yesterday* dividers. |
+| 💬 **Clean chat UI** | Sidebar history, markdown answers and tables, source chips, tool tags, copy button, suggestion prompts, light/dark toggle, mobile friendly. |
 | 🚀 **One-command deploy** | `.\deploy.ps1` creates all infrastructure, syncs documents and uploads the UI. No IDs or URLs to copy by hand. |
 | 💸 **Near-zero idle cost** | Fully pay-per-use — nothing runs (or bills) while nobody is chatting. |
 
@@ -122,7 +126,7 @@ flowchart TD
 | Layer | Technology |
 |---|---|
 | Frontend | HTML, CSS, vanilla JavaScript |
-| Backend | Python 3.11, FastAPI, Mangum, Pydantic Settings |
+| Backend | Python 3.11, FastAPI on uvicorn via **AWS Lambda Web Adapter** (response streaming), Pydantic Settings |
 | AI | LangGraph, Amazon Nova Lite, Titan Text Embeddings V2, Bedrock Guardrails |
 | Retrieval | Bedrock Knowledge Base + Amazon S3 Vectors |
 | Auth & data | Amazon Cognito (managed login, PKCE), Amazon DynamoDB (on-demand) |
@@ -135,9 +139,27 @@ One DynamoDB table, partitioned by user:
 | `pk` | `sk` | Holds |
 |---|---|---|
 | `USER#<cognito sub>` | `CHAT#<chatId>` | title, createdAt, updatedAt |
-| `USER#<cognito sub>` | `MSG#<chatId>#<epoch ms>#<0\|1>` | role, text, answer metadata (sources, tool, review flag) |
+| `USER#<cognito sub>` | `MSG#<chatId>#<epoch ms>#<0\|1>` | role, text, answer metadata (sources, tool, review flag), feedback |
+| `USER#<cognito sub>` | `DOC#<chatId>#<epoch ms>` | facts extracted from an uploaded salary slip / bank statement |
 
-Every message is its own item, so long chats never hit DynamoDB's 400 KB item limit, and the agent reads only the last 6 messages for context.
+Every message is its own item, so long chats never hit DynamoDB's 400 KB item limit, and the agent reads only the last 6 messages for context. A message's id is `<epoch ms>-<0|1>`, which is also its timestamp.
+
+### Salary slip / bank statement check
+
+```mermaid
+flowchart LR
+    F([📎 PDF / PNG / JPG<br/>max 4 MB]) --> N[🤖 Nova Lite<br/>reads the document]
+    N -->|strict tool| X[income · EMIs · key facts<br/><i>no account no. / PAN / Aadhaar</i>]
+    X --> M[🧮 FOIR maths<br/>EMIs ≤ 50% of income]
+    M --> S[📊 Summary in chat]
+    X --> D[(DynamoDB<br/>DOC# item)]
+    D --> Q[💬 Follow-up questions<br/>in the same chat]
+```
+
+- **The file itself is never stored.** Only the extracted numbers and short key facts are saved with the chat, and they are deleted with it.
+- **No double counting:** on a salary slip, loan EMIs are payroll deductions, so they are added back to take-home pay before the debt-to-income check (on a bank statement they are not).
+- Policy used (from the knowledge base): total EMIs ≤ 50% of monthly income, minimum income ₹25,000, CIBIL < 650 → loan officer review.
+- Try it with [`docs/samples/sample-salary-slip.pdf`](docs/samples/sample-salary-slip.pdf) (fictional data).
 
 ---
 
@@ -234,7 +256,7 @@ All prices are **us-east-1 on-demand**, as published by AWS at the time of writi
 
 | Resource | What you pay for | Price |
 |---|---|---|
-| **Bedrock – Nova Lite** | Input / output tokens | $0.00006 / 1K input · $0.00024 / 1K output |
+| **Bedrock – Nova Lite** | Input / output tokens (chat, routing, EMI tool, document reading) | $0.00006 / 1K input · $0.00024 / 1K output |
 | **Bedrock – Titan Embeddings V2** | Tokens embedded (ingestion + each query) | $0.00002 / 1K tokens |
 | **Bedrock – Guardrails** | Text units checked (1 unit = 1,000 characters) | $0.15 / 1K text units (content filters) |
 | **Bedrock – Knowledge Base** | No separate charge; you pay for the models and vector store it uses | $0 |
@@ -267,6 +289,9 @@ Assumptions per chat message: Nova Lite ≈ 1,700 input + 320 output tokens (cle
 | **Total (approx.)** | **≈ $0.70** | **≈ $6.50** | **≈ $66** |
 
 > [!NOTE]
+> **Document checks are cheap too:** reading a 1–2 page salary slip with Nova Lite is ≈ 2–4K input tokens, i.e. about **$0.0003 per upload** (≈ $0.30 for 1,000 uploads). Streaming costs the same as a normal answer.
+
+> [!NOTE]
 > Chat history adds well under **1%** to the bill: DynamoDB is ~$0.35 even at 100K chats, and its storage stays inside the free 25 GB for a long time (~5 KB per message pair). Cognito is free up to 10,000 monthly active users; above that each extra user costs $0.015 (e.g. 20,000 users ≈ $150/month).
 
 > [!TIP]
@@ -296,6 +321,9 @@ Authorization: <id_token>
 |---|---|---|
 | `GET` | `/api/health` | Health check (no sign-in) |
 | `POST` | `/api/v1/chat` | Ask a question; saves both messages to the chat |
+| `POST` | `/api/v1/chat/stream` | Same, but streams NDJSON events: `meta` → many `delta` → `done` |
+| `POST` | `/api/v1/documents` | Upload a salary slip / bank statement (base64, ≤ 4 MB) → income + eligibility summary |
+| `PUT` | `/api/v1/chats/{id}/messages/{messageId}/feedback` | `{ "rating": "up" \| "down" \| null }` |
 | `GET` | `/api/v1/chats` | List your chats (id, title, timestamps) |
 | `GET` | `/api/v1/chats/{id}` | One chat with all its messages |
 | `PATCH` | `/api/v1/chats/{id}` | Rename: `{ "title": "New name" }` |
@@ -385,10 +413,10 @@ loanassist-ai/
 ├── frontend/              # Chat UI (index.html, css/, js/app.js, js/auth-config.js)
 ├── knowledge-base/        # Documents + <file>.metadata.json loan-type tags
 ├── src/
-│   ├── lambda_handler.py  # Lambda entry point (Mangum)
 │   └── app/
 │       ├── main.py        # FastAPI routes
 │       ├── agent.py       # LangGraph state, tools and routing
+│       ├── documents.py   # Salary slip / bank statement summary
 │       ├── loan_math.py   # EMI parsing/maths, CIBIL + loan-type detection, fast routing
 │       ├── config.py      # Environment settings
 │       ├── schemas.py     # Request / response models
@@ -398,7 +426,9 @@ loanassist-ai/
 ├── template.yaml          # All AWS infrastructure (SAM)
 ├── samconfig.toml         # Deploy defaults (no secrets)
 ├── deploy.ps1             # One-command deploy
-├── tests/                 # pytest unit tests (loan maths, CIBIL, routing)
+├── tests/                 # pytest: loan maths, CIBIL, routing, API, streaming, documents
+├── run.sh                 # Lambda start-up (uvicorn behind the Lambda Web Adapter)
+├── docs/                  # architecture diagram, screenshots, sample salary slip
 └── requirements.txt
 ```
 

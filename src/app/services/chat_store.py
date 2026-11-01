@@ -3,9 +3,11 @@
 DynamoDB layout (single table, partitioned per user):
     pk = USER#<user id>
     sk = CHAT#<chat id>                       -> title, createdAt, updatedAt
-    sk = MSG#<chat id>#<epoch ms>#<0|1>       -> role, text, data (JSON)
+    sk = MSG#<chat id>#<epoch ms>#<0|1>       -> role, text, data (JSON), feedback
+    sk = DOC#<chat id>#<epoch ms>             -> facts extracted from an uploaded document (JSON)
 
 Each message is its own item, so long chats never hit DynamoDB's 400 KB item limit.
+A message id is "<epoch ms>-<0|1>" (the tail of its sort key).
 """
 
 import json
@@ -21,9 +23,13 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _history_lines(messages: list[dict[str, Any]]) -> list[str]:
+def history_lines(messages: list[dict[str, Any]]) -> list[str]:
     """Format messages the way the agent prompt expects."""
     return [f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['text']}" for m in messages]
+
+
+def _message_id(ts: int, index: int) -> str:
+    return f"{ts:013d}-{index}"
 
 
 class DynamoChatStore:
@@ -43,6 +49,11 @@ class DynamoChatStore:
                 return items
             kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
+    def _prefix(self, user_id: str, prefix: str, **kwargs: Any) -> list[dict[str, Any]]:
+        return self._query_all(
+            KeyConditionExpression=Key("pk").eq(self._pk(user_id)) & Key("sk").begins_with(prefix), **kwargs
+        )
+
     @staticmethod
     def _meta(item: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -54,24 +65,30 @@ class DynamoChatStore:
 
     @staticmethod
     def _message(item: dict[str, Any]) -> dict[str, Any]:
-        message: dict[str, Any] = {"role": item["role"], "text": item.get("text", "")}
+        _, _, ts, index = item["sk"].split("#")
+        message: dict[str, Any] = {
+            "id": f"{ts}-{index}",
+            "role": item["role"],
+            "text": item.get("text", ""),
+            "createdAt": int(ts),
+        }
         if item.get("data"):
             message["data"] = json.loads(item["data"])
+        if item.get("feedback"):
+            message["feedback"] = item["feedback"]
         return message
 
+    # ------------------------------------------------------------------ chats
+
     def list_chats(self, user_id: str) -> list[dict[str, Any]]:
-        items = self._query_all(
-            KeyConditionExpression=Key("pk").eq(self._pk(user_id)) & Key("sk").begins_with("CHAT#")
-        )
+        items = self._prefix(user_id, "CHAT#")
         return sorted((self._meta(i) for i in items), key=lambda c: c["updatedAt"], reverse=True)
 
     def get_chat(self, user_id: str, chat_id: str) -> dict[str, Any] | None:
         item = self.table.get_item(Key={"pk": self._pk(user_id), "sk": f"CHAT#{chat_id}"}).get("Item")
         if not item:
             return None
-        messages = self._query_all(
-            KeyConditionExpression=Key("pk").eq(self._pk(user_id)) & Key("sk").begins_with(f"MSG#{chat_id}#")
-        )
+        messages = self._prefix(user_id, f"MSG#{chat_id}#")
         return {**self._meta(item), "messages": [self._message(m) for m in messages]}
 
     def recent_history(self, user_id: str, chat_id: str, limit: int = 6) -> list[str]:
@@ -81,9 +98,10 @@ class DynamoChatStore:
             Limit=limit,
         )
         newest_first = [self._message(m) for m in response.get("Items", [])]
-        return _history_lines(list(reversed(newest_first)))
+        return history_lines(list(reversed(newest_first)))
 
-    def save_turn(self, user_id: str, chat_id: str, title: str, user_text: str, reply: dict[str, Any]) -> None:
+    def add_messages(self, user_id: str, chat_id: str, title: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Append messages ({role, text, data?}) and create the chat if needed. Returns them with id + createdAt."""
         now = _now_ms()
         pk = self._pk(user_id)
         self.table.update_item(
@@ -91,15 +109,38 @@ class DynamoChatStore:
             UpdateExpression="SET title = if_not_exists(title, :t), createdAt = if_not_exists(createdAt, :n), updatedAt = :n",
             ExpressionAttributeValues={":t": title, ":n": now},
         )
+        saved = []
         with self.table.batch_writer() as batch:
-            batch.put_item(Item={"pk": pk, "sk": f"MSG#{chat_id}#{now:013d}#0", "role": "user", "text": user_text})
-            batch.put_item(Item={
-                "pk": pk,
-                "sk": f"MSG#{chat_id}#{now:013d}#1",
-                "role": "assistant",
-                "text": reply["answer"],
-                "data": json.dumps(reply, ensure_ascii=False),
-            })
+            for index, message in enumerate(messages):
+                item = {"pk": pk, "sk": f"MSG#{chat_id}#{now:013d}#{index}", "role": message["role"], "text": message["text"]}
+                if message.get("data") is not None:
+                    item["data"] = json.dumps(message["data"], ensure_ascii=False)
+                batch.put_item(Item=item)
+                saved.append({**message, "id": _message_id(now, index), "createdAt": now})
+        return saved
+
+    def save_turn(self, user_id: str, chat_id: str, title: str, user_text: str, reply: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.add_messages(user_id, chat_id, title, [
+            {"role": "user", "text": user_text},
+            {"role": "assistant", "text": reply["answer"], "data": reply},
+        ])
+
+    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None) -> bool:
+        ts, _, index = message_id.partition("-")
+        key = {"pk": self._pk(user_id), "sk": f"MSG#{chat_id}#{ts}#{index}"}
+        try:
+            if rating:
+                self.table.update_item(
+                    Key=key, UpdateExpression="SET feedback = :r, feedbackAt = :n",
+                    ConditionExpression="attribute_exists(pk)", ExpressionAttributeValues={":r": rating, ":n": _now_ms()},
+                )
+            else:
+                self.table.update_item(Key=key, UpdateExpression="REMOVE feedback, feedbackAt", ConditionExpression="attribute_exists(pk)")
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
 
     def rename_chat(self, user_id: str, chat_id: str, title: str) -> bool:
         try:
@@ -117,14 +158,24 @@ class DynamoChatStore:
 
     def delete_chat(self, user_id: str, chat_id: str) -> None:
         pk = self._pk(user_id)
-        keys = self._query_all(
-            KeyConditionExpression=Key("pk").eq(pk) & Key("sk").begins_with(f"MSG#{chat_id}#"),
-            ProjectionExpression="pk, sk",
-        )
+        keys = self._prefix(user_id, f"MSG#{chat_id}#", ProjectionExpression="pk, sk")
+        keys += self._prefix(user_id, f"DOC#{chat_id}#", ProjectionExpression="pk, sk")
         with self.table.batch_writer() as batch:
             for key in keys:
                 batch.delete_item(Key={"pk": key["pk"], "sk": key["sk"]})
             batch.delete_item(Key={"pk": pk, "sk": f"CHAT#{chat_id}"})
+
+    # ------------------------------------------------------------------ documents
+
+    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any]) -> None:
+        self.table.put_item(Item={
+            "pk": self._pk(user_id),
+            "sk": f"DOC#{chat_id}#{_now_ms():013d}",
+            "data": json.dumps(document, ensure_ascii=False),
+        })
+
+    def list_documents(self, user_id: str, chat_id: str) -> list[dict[str, Any]]:
+        return [json.loads(i["data"]) for i in self._prefix(user_id, f"DOC#{chat_id}#")]
 
 
 class MemoryChatStore:
@@ -132,6 +183,7 @@ class MemoryChatStore:
 
     def __init__(self) -> None:
         self.chats: dict[tuple[str, str], dict[str, Any]] = {}
+        self.documents: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     def list_chats(self, user_id: str) -> list[dict[str, Any]]:
         metas = [{k: v for k, v in c.items() if k != "messages"} for (u, _), c in self.chats.items() if u == user_id]
@@ -139,22 +191,38 @@ class MemoryChatStore:
 
     def get_chat(self, user_id: str, chat_id: str) -> dict[str, Any] | None:
         chat = self.chats.get((user_id, chat_id))
-        return {**chat, "messages": list(chat["messages"])} if chat else None
+        return {**chat, "messages": [dict(m) for m in chat["messages"]]} if chat else None
 
     def recent_history(self, user_id: str, chat_id: str, limit: int = 6) -> list[str]:
         chat = self.chats.get((user_id, chat_id))
-        return _history_lines(chat["messages"][-limit:]) if chat else []
+        return history_lines(chat["messages"][-limit:]) if chat else []
 
-    def save_turn(self, user_id: str, chat_id: str, title: str, user_text: str, reply: dict[str, Any]) -> None:
+    def add_messages(self, user_id: str, chat_id: str, title: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         now = _now_ms()
         chat = self.chats.setdefault(
             (user_id, chat_id), {"id": chat_id, "title": title, "createdAt": now, "updatedAt": now, "messages": []}
         )
         chat["updatedAt"] = now
-        chat["messages"] += [
+        saved = [{**m, "id": _message_id(now, i), "createdAt": now} for i, m in enumerate(messages)]
+        chat["messages"] += saved
+        return saved
+
+    def save_turn(self, user_id: str, chat_id: str, title: str, user_text: str, reply: dict[str, Any]) -> list[dict[str, Any]]:
+        return self.add_messages(user_id, chat_id, title, [
             {"role": "user", "text": user_text},
             {"role": "assistant", "text": reply["answer"], "data": reply},
-        ]
+        ])
+
+    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None) -> bool:
+        chat = self.chats.get((user_id, chat_id))
+        message = next((m for m in (chat or {}).get("messages", []) if m["id"] == message_id), None)
+        if not message:
+            return False
+        if rating:
+            message["feedback"] = rating
+        else:
+            message.pop("feedback", None)
+        return True
 
     def rename_chat(self, user_id: str, chat_id: str, title: str) -> bool:
         chat = self.chats.get((user_id, chat_id))
@@ -165,6 +233,13 @@ class MemoryChatStore:
 
     def delete_chat(self, user_id: str, chat_id: str) -> None:
         self.chats.pop((user_id, chat_id), None)
+        self.documents.pop((user_id, chat_id), None)
+
+    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any]) -> None:
+        self.documents.setdefault((user_id, chat_id), []).append(document)
+
+    def list_documents(self, user_id: str, chat_id: str) -> list[dict[str, Any]]:
+        return list(self.documents.get((user_id, chat_id), []))
 
 
 def build_chat_store(table_name: str, region: str | None) -> DynamoChatStore | MemoryChatStore:
