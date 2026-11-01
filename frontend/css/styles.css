@@ -324,6 +324,62 @@ button, input { font: inherit; color: inherit; }
 .feedback .icon-btn.active.fb-down { color: var(--danger); background: rgba(179, 38, 30, 0.1); }
 .meta .msg-time { margin-left: 2px; }
 
+/* ================= Citations + sources ================= */
+.cite {
+  display: inline-grid; place-items: center; min-width: 17px; height: 17px; margin: 0 1px 0 2px; padding: 0 4px;
+  border-radius: 6px; background: var(--user-bubble); color: var(--accent);
+  font-size: 11px; font-weight: 700; line-height: 1; vertical-align: 3px; cursor: pointer;
+}
+.cite:hover { background: var(--accent); color: #fff; }
+.sources { margin: 12px 0 4px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.sources-head { padding: 7px 12px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; background: var(--user-bubble); }
+.sources ol { margin: 0; padding: 0; list-style: none; }
+.source-item + .source-item { border-top: 1px solid var(--border); }
+.source-top {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px;
+  border: 0; background: transparent; text-align: left; cursor: pointer;
+}
+.source-top:hover { background: var(--hover); }
+.source-num {
+  flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px;
+  background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
+}
+.source-title { font-size: 14px; font-weight: 600; }
+.source-file { margin-left: auto; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-excerpt {
+  display: none; margin: 0; padding: 0 12px 10px 42px; color: var(--muted); font-size: 13px; line-height: 1.5;
+}
+.source-item.open .source-excerpt { display: block; }
+.source-item.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { 0% { background: rgba(194, 96, 58, 0.18); } 100% { background: transparent; } }
+
+/* ================= Written feedback ================= */
+.feedback-write {
+  display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; margin-left: 2px;
+  border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted);
+  font-size: 12.5px; cursor: pointer;
+}
+.feedback-write:hover { color: var(--text); background: var(--hover); }
+.feedback-write.sent { color: #1f8a4c; border-color: rgba(31, 138, 76, 0.35); }
+.feedback-form {
+  margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface);
+}
+.feedback-form[hidden] { display: none; }
+.feedback-label { display: block; margin-bottom: 6px; font-size: 14px; font-weight: 600; }
+.feedback-form textarea {
+  width: 100%; min-height: 64px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); color: var(--text); font: inherit; font-size: 14px; resize: vertical; outline: 0;
+}
+.feedback-form textarea:focus { border-color: var(--accent); }
+.feedback-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.feedback-hint { margin-right: auto; color: var(--muted); font-size: 12px; }
+.link-btn { padding: 6px 10px; border: 0; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; }
+.link-btn:hover { color: var(--text); }
+.small-btn { padding: 7px 14px; border: 0; border-radius: 9px; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+.small-btn:hover { background: var(--accent-hover); }
+.small-btn:disabled { opacity: 0.5; cursor: default; }
+@media (max-width: 600px) { .feedback-hint { display: none; } .source-file { display: none; } }
+
 /* ================= Toast ================= */
 .toast {
   position: fixed; left: 50%; bottom: 110px; z-index: 60; transform: translate(-50%, 20px);

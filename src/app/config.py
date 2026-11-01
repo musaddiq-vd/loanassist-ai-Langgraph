@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     bedrock_guardrail_version: str = "DRAFT"
     # DynamoDB table for chat history. Empty = in-memory store (local development).
     chats_table: str = ""
+    # SNS topic for feedback alerts (👎 or written comments). Empty = no alerts.
+    feedback_topic_arn: str = ""
     allowed_origins: str = "http://localhost:3000"
     log_level: str = "INFO"
 

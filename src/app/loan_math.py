@@ -252,6 +252,14 @@ def extract_cibil_score(text: str) -> int | None:
 # --------------------------------------------------------------------------- fast routing
 
 
+_SOURCES_RE = re.compile(r"\b(citations?|cite|sources?|references?|where (is|does) (this|that) (come|say)|which (document|policy))\b", re.IGNORECASE)
+
+
+def asks_for_sources(question: str) -> bool:
+    """'Could you mention citations?', 'what is the source?', 'which document says that?'."""
+    return bool(_SOURCES_RE.search(question))
+
+
 def fast_route(question: str, has_documents: bool = False) -> str | None:
     """Obvious cases that don't need the LLM router (saves one model call + ~1 s).
 
@@ -261,6 +269,8 @@ def fast_route(question: str, has_documents: bool = False) -> str | None:
     Everything else (incl. "what is EMI?", follow-ups) returns None -> LLM router.
     """
     lower = question.lower()
+    if asks_for_sources(question):
+        return "retrieve_loan_documents"  # "show citations / sources" -> search the policy documents
     if has_documents and re.search(r"\b(eligib\w*|afford\w*|borrow|how much (loan|can i)|can i get)\b", lower):
         return "check_loan_eligibility"  # uses the uploaded income for a debt-to-income check
     if has_documents and re.search(
@@ -272,6 +282,8 @@ def fast_route(question: str, has_documents: bool = False) -> str | None:
         return "calculate_emi"
     if extract_cibil_score(question) is not None:
         return "check_loan_eligibility"
+    if re.search(r"\b(process|procedure|steps?|how (do i|to|can i) apply|documents?|papers|kyc|required|prepayment|foreclos\w*|tenure|processing fee)\b", lower):
+        return "retrieve_loan_documents"  # policy / process questions are answered from the documents
     return None
 
 

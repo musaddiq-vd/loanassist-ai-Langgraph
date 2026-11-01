@@ -11,8 +11,31 @@ Parameters:
   EmbeddingModelId:
     Type: String
     Default: amazon.titan-embed-text-v2:0
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email that receives feedback alerts (thumbs down or written comments). Empty = no email.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
 
 Resources:
+  # ---------------------------------------------------------------------------
+  # Feedback alerts: Lambda publishes, the team gets an email
+  # ---------------------------------------------------------------------------
+  FeedbackAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: LoanAssist feedback
+
+  FeedbackAlertsEmail:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref FeedbackAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
   # ---------------------------------------------------------------------------
   # Knowledge Base: docs bucket -> Titan embeddings -> S3 Vectors index
   # ---------------------------------------------------------------------------
@@ -296,9 +319,12 @@ Resources:
           BEDROCK_GUARDRAIL_ID: !GetAtt Guardrail.GuardrailId
           BEDROCK_GUARDRAIL_VERSION: !GetAtt GuardrailVersion.Version
           CHATS_TABLE: !Ref ChatsTable
+          FEEDBACK_TOPIC_ARN: !Ref FeedbackAlertsTopic
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatsTable
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt FeedbackAlertsTopic.TopicName
         - Statement:
             - Effect: Allow
               # Converse = InvokeModel, ConverseStream = InvokeModelWithResponseStream.

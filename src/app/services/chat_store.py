@@ -32,6 +32,15 @@ def _message_id(ts: int, index: int) -> str:
     return f"{ts:013d}-{index}"
 
 
+def _exchange(messages: list[dict[str, Any]], message_id: str) -> tuple[str, str]:
+    """The answer with this id and the user question just before it."""
+    for i, message in enumerate(messages):
+        if message.get("id") == message_id:
+            question = next((m["text"] for m in reversed(messages[:i]) if m["role"] == "user"), "")
+            return question, message.get("text", "")
+    return "", ""
+
+
 class DynamoChatStore:
     def __init__(self, table_name: str, region: str | None = None):
         self.table = boto3.resource("dynamodb", region_name=region).Table(table_name)
@@ -76,6 +85,8 @@ class DynamoChatStore:
             message["data"] = json.loads(item["data"])
         if item.get("feedback"):
             message["feedback"] = item["feedback"]
+        if item.get("feedbackComment"):
+            message["feedbackComment"] = item["feedbackComment"]
         return message
 
     # ------------------------------------------------------------------ chats
@@ -125,22 +136,38 @@ class DynamoChatStore:
             {"role": "assistant", "text": reply["answer"], "data": reply},
         ])
 
-    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None) -> bool:
+    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None, comment: str | None = None) -> bool:
+        """Save 👍/👎 (None clears it) and, if given, a written comment on one assistant message."""
         ts, _, index = message_id.partition("-")
         key = {"pk": self._pk(user_id), "sk": f"MSG#{chat_id}#{ts}#{index}"}
+        sets, removes, values = ["feedbackAt = :n"], [], {":n": _now_ms()}
+        if rating:
+            sets.append("feedback = :r")
+            values[":r"] = rating
+        else:
+            removes.append("feedback")
+        if comment:
+            sets.append("feedbackComment = :c")
+            values[":c"] = comment
+        expression = "SET " + ", ".join(sets) + (" REMOVE " + ", ".join(removes) if removes else "")
         try:
-            if rating:
-                self.table.update_item(
-                    Key=key, UpdateExpression="SET feedback = :r, feedbackAt = :n",
-                    ConditionExpression="attribute_exists(pk)", ExpressionAttributeValues={":r": rating, ":n": _now_ms()},
-                )
-            else:
-                self.table.update_item(Key=key, UpdateExpression="REMOVE feedback, feedbackAt", ConditionExpression="attribute_exists(pk)")
+            self.table.update_item(Key=key, UpdateExpression=expression, ConditionExpression="attribute_exists(pk)",
+                                   ExpressionAttributeValues=values)
             return True
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
                 return False
             raise
+
+    def get_exchange(self, user_id: str, chat_id: str, message_id: str) -> tuple[str, str]:
+        """(user question, assistant answer) around an assistant message, for the feedback log."""
+        chat = self.get_chat(user_id, chat_id) or {"messages": []}
+        return _exchange(chat["messages"], message_id)
+
+    def log_feedback(self, entry: dict[str, Any]) -> None:
+        """One shared partition the team can read in a single query (newest last):
+        pk = FEEDBACK, sk = <epoch ms>#<message id>."""
+        self.table.put_item(Item={"pk": "FEEDBACK", "sk": f"{entry['createdAt']:013d}#{entry['messageId']}", **entry})
 
     def rename_chat(self, user_id: str, chat_id: str, title: str) -> bool:
         try:
@@ -184,6 +211,7 @@ class MemoryChatStore:
     def __init__(self) -> None:
         self.chats: dict[tuple[str, str], dict[str, Any]] = {}
         self.documents: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.feedback_log: list[dict[str, Any]] = []
 
     def list_chats(self, user_id: str) -> list[dict[str, Any]]:
         metas = [{k: v for k, v in c.items() if k != "messages"} for (u, _), c in self.chats.items() if u == user_id]
@@ -213,7 +241,7 @@ class MemoryChatStore:
             {"role": "assistant", "text": reply["answer"], "data": reply},
         ])
 
-    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None) -> bool:
+    def set_feedback(self, user_id: str, chat_id: str, message_id: str, rating: str | None, comment: str | None = None) -> bool:
         chat = self.chats.get((user_id, chat_id))
         message = next((m for m in (chat or {}).get("messages", []) if m["id"] == message_id), None)
         if not message:
@@ -222,7 +250,16 @@ class MemoryChatStore:
             message["feedback"] = rating
         else:
             message.pop("feedback", None)
+        if comment:
+            message["feedbackComment"] = comment
         return True
+
+    def get_exchange(self, user_id: str, chat_id: str, message_id: str) -> tuple[str, str]:
+        chat = self.chats.get((user_id, chat_id)) or {"messages": []}
+        return _exchange(chat["messages"], message_id)
+
+    def log_feedback(self, entry: dict[str, Any]) -> None:
+        self.feedback_log.append(entry)
 
     def rename_chat(self, user_id: str, chat_id: str, title: str) -> bool:
         chat = self.chats.get((user_id, chat_id))

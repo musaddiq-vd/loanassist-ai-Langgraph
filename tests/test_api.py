@@ -131,3 +131,38 @@ def test_current_user_reads_verified_token(monkeypatch):
     assert main.current_user(req) == "user-123"
     with pytest.raises(HTTPException):
         main.current_user(Request({"type": "http", "headers": []}))
+
+
+class FakeAlerts:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, entry):
+        self.sent.append(entry)
+
+
+def test_written_feedback_is_logged_and_alerts(client):
+    alerts = FakeAlerts()
+    main.app.state.alerts = alerts
+    r = client.post("/api/v1/chat", json={"message": "what is foir?", "session_id": "f1"}).json()
+    url = f"/api/v1/chats/f1/messages/{r['message_id']}/feedback"
+    # 👍 only: logged, no email
+    client.put(url, json={"rating": "up"})
+    assert alerts.sent == []
+    # 👎 with a comment: saved on the message, logged with the question/answer, emailed
+    res = client.put(url, json={"rating": "down", "comment": "  Please cite the policy section  "}).json()
+    assert res["comment"] == "Please cite the policy section"
+    msg = client.get("/api/v1/chats/f1").json()["messages"][1]
+    assert msg["feedback"] == "down" and msg["feedbackComment"] == "Please cite the policy section"
+    log = main.app.state.store.feedback_log
+    assert log[-1]["question"] == "what is foir?" and log[-1]["answer"].startswith("answer to:")
+    assert len(alerts.sent) == 1 and alerts.sent[0]["comment"] == "Please cite the policy section"
+    assert client.put(url, json={"comment": "x" * 1001}).status_code == 422
+
+
+def test_citation_follow_up_searches_previous_question(client):
+    calls = []
+    client.fake.retrieve = lambda query, loan_type=None: (calls.append(query) or ("[1] Home loan:\nPAN needed", []))
+    client.post("/api/v1/chat", json={"message": "What documents do I need for a home loan?", "session_id": "s1"})
+    client.post("/api/v1/chat", json={"message": "could you please mention citations", "session_id": "s1"})
+    assert "What documents do I need for a home loan?" in calls[-1]

@@ -3,6 +3,7 @@ import binascii
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from src.app.schemas import (
     RenameRequest,
 )
 from src.app.services.bedrock import BedrockService
+from src.app.services.alerts import FeedbackAlerts, should_alert
 from src.app.services.chat_store import build_chat_store
 
 settings = get_settings()
@@ -40,6 +42,7 @@ async def lifespan(app: FastAPI):
     app.state.bedrock = BedrockService(settings)
     app.state.agent = build_loan_agent(app.state.bedrock)
     app.state.store = build_chat_store(settings.chats_table, settings.aws_region)
+    app.state.alerts = FeedbackAlerts(settings.feedback_topic_arn, settings.aws_region)
     yield
 
 
@@ -214,9 +217,28 @@ def upload_document(payload: DocumentUpload, request: Request, user_id: str = De
 @app.put("/api/v1/chats/{chat_id}/messages/{message_id}/feedback")
 def set_feedback(payload: FeedbackRequest, request: Request, chat_id: str = ChatId, message_id: str = MessageId,
                  user_id: str = Depends(current_user)) -> dict:
-    if not request.app.state.store.set_feedback(user_id, chat_id, message_id, payload.rating):
+    """Save 👍/👎 and optional written feedback on an answer.
+
+    Stored on the message itself and in a shared FEEDBACK log the team can review;
+    a 👎 or a written comment also emails the team (SNS)."""
+    store = request.app.state.store
+    comment = (payload.comment or "").strip() or None
+    if not store.set_feedback(user_id, chat_id, message_id, payload.rating, comment):
         raise HTTPException(status_code=404, detail="Message not found.")
-    return {"message_id": message_id, "rating": payload.rating}
+
+    if payload.rating or comment:
+        try:
+            question, answer = store.get_exchange(user_id, chat_id, message_id)
+            entry = {
+                "createdAt": int(time.time() * 1000), "userId": user_id, "chatId": chat_id, "messageId": message_id,
+                "rating": payload.rating, "comment": comment, "question": question[:2000], "answer": answer[:4000],
+            }
+            store.log_feedback({k: v for k, v in entry.items() if v is not None})
+            if should_alert(payload.rating, comment):
+                request.app.state.alerts.send(entry)
+        except Exception:
+            logger.exception("Feedback log/alert failed", extra={"chat_id": chat_id})
+    return {"message_id": message_id, "rating": payload.rating, "comment": comment}
 
 
 @app.get("/api/v1/chats")

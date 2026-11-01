@@ -4,6 +4,7 @@ from langgraph.graph import END, START, StateGraph
 
 from src.app.loan_math import (
     affordability,
+    asks_for_sources,
     calculate_emi as calculate_emi_amount,
     describe_affordability,
     detect_loan_type,
@@ -87,7 +88,19 @@ def build_loan_agent(bedrock: BedrockService):
             for line in reversed(state.get("history", [])):
                 if line.startswith("User:") and (loan_type := detect_loan_type(line)):
                     break
-        context, sources = bedrock.retrieve(state["question"], loan_type)
+        # "Mention citations" / "what's the source?" -> search for the previous question again,
+        # so the answer is rebuilt from real passages with real [n] citations.
+        query = state["question"]
+        if asks_for_sources(query):
+            previous = next((line[5:].strip() for line in reversed(state.get("history", [])) if line.startswith("User:")), None)
+            if previous:
+                query = f"{previous} {query}"
+        context, sources = bedrock.retrieve(query, loan_type)
+        if not sources:
+            context = "No policy passages matched. Say that this isn't covered in the policy documents; do not add citations."
+        elif asks_for_sources(state["question"]):
+            context = ("The customer wants citations for the previous answer. Rewrite that answer using ONLY the numbered "
+                       "passages below and cite every fact with its [n]. Drop anything the passages do not support.\n\n" + context)
         return {"context": context, "sources": sources, "tool_used": "retrieve_loan_documents"}
 
     def calculate_emi(state: LoanState) -> LoanState:

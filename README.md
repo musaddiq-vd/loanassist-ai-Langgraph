@@ -58,7 +58,8 @@
 | ✨ **Smart chat names** | Chats are named from the first question, e.g. *EMI · ₹50,00,000 at 8.5% for 20 yrs* or *Eligibility · CIBIL 620*. |
 | ⚡ **Streaming answers** | Answers appear word by word (Bedrock ConverseStream → API Gateway REST response streaming), with an automatic fallback to the normal endpoint. |
 | 📎 **Salary slip / bank statement check** | Upload a PDF or image; Nova Lite reads the income and EMIs, and LoanAssist shows debt-to-income, room for a new EMI and an estimated max loan. Ask follow-up questions about the document in the same chat. |
-| 👍 **Answer feedback** | Thumbs up/down on every answer, saved with the message for later evaluation. |
+| 📑 **Real citations** | Answers cite the policy documents inline as [1], [2]; a numbered *Sources* list under the answer opens the exact passage. Asking *“mention citations”* rebuilds the answer from the documents. |
+| 👍 **Answer feedback** | Thumbs up/down plus a written *Give feedback* note on every answer. Saved in DynamoDB; a 👎 or a note emails the team. |
 | 🕒 **Timestamps** | Every message shows its time, with *Today / Yesterday* dividers. |
 | 💬 **Clean chat UI** | Sidebar history, markdown answers and tables, source chips, tool tags, copy button, suggestion prompts, light/dark toggle, mobile friendly. |
 | 🚀 **One-command deploy** | `.\deploy.ps1` creates all infrastructure, syncs documents and uploads the UI. No IDs or URLs to copy by hand. |
@@ -141,8 +142,36 @@ One DynamoDB table, partitioned by user:
 | `USER#<cognito sub>` | `CHAT#<chatId>` | title, createdAt, updatedAt |
 | `USER#<cognito sub>` | `MSG#<chatId>#<epoch ms>#<0\|1>` | role, text, answer metadata (sources, tool, review flag), feedback |
 | `USER#<cognito sub>` | `DOC#<chatId>#<epoch ms>` | facts extracted from an uploaded salary slip / bank statement |
+| `FEEDBACK` | `<epoch ms>#<messageId>` | team review log: rating, comment, question, answer, user, chat |
 
 Every message is its own item, so long chats never hit DynamoDB's 400 KB item limit, and the agent reads only the last 6 messages for context. A message's id is `<epoch ms>-<0|1>`, which is also its timestamp.
+
+### Citations
+
+- Retrieved chunks are grouped **per document** and numbered `[1]`, `[2]` … in the prompt, in the same order as the `sources` returned to the UI, so an inline `[2]` always points at source 2.
+- The prompt forbids invented document names, sections or page numbers. If an answer has no sources (e.g. an EMI calculation), the UI hides any stray `[n]`.
+- *“Mention citations / what's the source?”* re-runs the search for the previous question and rewrites the answer from the passages only.
+
+### Feedback: where it goes and who is told
+
+| | |
+|---|---|
+| **On the answer** | `feedback` (up/down) and `feedbackComment` on the `MSG#…` item, so the user sees it again on any device |
+| **Team log** | One `FEEDBACK` partition in the chats table with the rating, comment, question and answer, newest last |
+| **Alert** | A 👎 or any written note publishes to the SNS topic `FeedbackAlertsTopic`, which emails `AlertEmail` |
+
+Set or change who gets the email (remembered for later deploys; confirm the AWS subscription email once):
+
+```powershell
+.\deploy.ps1 -AlertEmail team@yourbank.com
+```
+
+Read the feedback log:
+
+```powershell
+aws dynamodb query --table-name <ChatsTable> --key-condition-expression "pk = :p" `
+  --expression-attribute-values '{\":p\":{\"S\":\"FEEDBACK\"}}' --no-scan-index-forward --max-items 20
+```
 
 ### Salary slip / bank statement check
 
@@ -267,6 +296,7 @@ All prices are **us-east-1 on-demand**, as published by AWS at the time of writi
 | **S3** (frontend + docs) | Storage · requests | ~$0.023 / GB-month (a few MB here → cents) |
 | **DynamoDB** (on-demand) | Writes · reads · storage | $0.625 / 1M write units · $0.125 / 1M read units · $0.25 / GB-month (first 25 GB free, always) |
 | **Cognito** (Essentials) | Monthly active users (MAU) | First 10,000 MAU free every month (does not expire) · then $0.015 / MAU |
+| **SNS** (feedback emails) | Email notifications | First 1,000 emails / month free, then $2 per 100,000 |
 | **CloudWatch Logs** | Ingestion · storage | $0.50 / GB ingested · free tier 5 GB / month |
 
 ### Estimated monthly bill
@@ -323,7 +353,7 @@ Authorization: <id_token>
 | `POST` | `/api/v1/chat` | Ask a question; saves both messages to the chat |
 | `POST` | `/api/v1/chat/stream` | Same, but streams NDJSON events: `meta` → many `delta` → `done` |
 | `POST` | `/api/v1/documents` | Upload a salary slip / bank statement (base64, ≤ 4 MB) → income + eligibility summary |
-| `PUT` | `/api/v1/chats/{id}/messages/{messageId}/feedback` | `{ "rating": "up" \| "down" \| null }` |
+| `PUT` | `/api/v1/chats/{id}/messages/{messageId}/feedback` | `{ "rating": "up" \| "down" \| null, "comment": "optional note" }` |
 | `GET` | `/api/v1/chats` | List your chats (id, title, timestamps) |
 | `GET` | `/api/v1/chats/{id}` | One chat with all its messages |
 | `PATCH` | `/api/v1/chats/{id}` | Rename: `{ "title": "New name" }` |

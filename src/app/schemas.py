@@ -38,6 +38,7 @@ class RenameRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     rating: Literal["up", "down"] | None = None  # None clears it
+    comment: str | None = Field(default=None, max_length=1000)  # optional written feedback
 
 
 class DocumentUpload(BaseModel):

@@ -45,6 +45,7 @@ const ICONS = {
   file: '<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/></svg>',
   thumbUp: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 11v9H4v-9h3Zm0 0 4-7a2 2 0 0 1 3 2l-1 4h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
   thumbDown: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M17 13V4h3v9h-3Zm0 0-4 7a2 2 0 0 1-3-2l1-4H6a2 2 0 0 1-2-2.3l1.2-6A2 2 0 0 1 7.2 4H17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+  note: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z M8 9h8 M8 12h5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -244,14 +245,26 @@ function makeTitle(text) {
 function escapeHtml(text) {
   return text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
-function inline(text) {
-  return escapeHtml(text)
+function inlineFmt(text, citations = 0) {
+  let html = escapeHtml(text)
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<em>$2</em>")
     .replace(/(^|[\s(])_([^_\s][^_]*)_(?=$|[\s.,;:!?)])/g, "$1<em>$2</em>");
+  if (!citations) {
+    // No sources behind this answer: drop any stray [n] markers instead of showing fake citations.
+    html = html.replace(/\s?\[\d{1,2}(?:\s*,\s*\d{1,2})*\]/g, "");
+  } else {
+    // "[1]" or "[1, 2]" -> small clickable numbers that open the matching source.
+    html = html.replace(/\[(\d{1,2}(?:\s*,\s*\d{1,2})*)\]/g, (match, nums) => {
+      const list = nums.split(",").map((n) => n.trim()).filter((n) => +n >= 1 && +n <= citations);
+      return list.length ? list.map((n) => `<sup class="cite" data-cite="${n}" title="Source ${n}">${n}</sup>`).join("") : match;
+    });
+  }
+  return html;
 }
-function renderMarkdown(source) {
+function renderMarkdown(source, citations = 0) {
+  const inline = (t) => inlineFmt(t, citations);
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const html = [];
   let list = null;
@@ -538,7 +551,7 @@ function reviewBadge() {
   return badge;
 }
 
-// msg: { text, data, id, createdAt, feedback, error }
+// msg: { text, data, id, createdAt, feedback, feedbackComment, error }
 function fillAssistant(el, msg, chatId) {
   const data = msg.data || { answer: msg.text };
   const body = el.querySelector(".body");
@@ -546,24 +559,15 @@ function fillAssistant(el, msg, chatId) {
   if (msg.error) el.classList.add("error");
   if (data.requires_human_review) body.append(reviewBadge());
 
+  const sources = (data.sources || []).filter((s) => s.uri);
   const content = document.createElement("div");
   content.className = "content";
-  content.innerHTML = renderMarkdown(data.answer || msg.text || "");
+  content.innerHTML = renderMarkdown(data.answer || msg.text || "", sources.length);
   body.append(content);
+  if (sources.length) body.append(sourceList(sources, content));
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  const sources = [...new Map((data.sources || []).filter((s) => s.uri).map((s) => [s.uri, s])).values()];
-  for (const s of sources) {
-    const chip = document.createElement("span");
-    chip.className = "source";
-    chip.title = s.excerpt || s.uri;
-    chip.innerHTML = ICONS.doc;
-    const name = document.createElement("span");
-    name.textContent = decodeURIComponent(s.uri.split("/").pop() || "Document");
-    chip.append(name);
-    meta.append(chip);
-  }
   if (TOOL_LABELS[data.tool_used]) {
     const tag = document.createElement("span");
     tag.className = "tool-tag";
@@ -583,20 +587,140 @@ function fillAssistant(el, msg, chatId) {
     });
     meta.append(copy);
   }
-  if (!msg.error && msg.id && chatId) meta.append(feedbackButtons(msg, chatId));
   body.append(meta);
+  if (!msg.error && msg.id && chatId) {
+    const form = feedbackForm(msg, chatId);
+    meta.append(feedbackButtons(msg, chatId, form));
+    body.append(form.el);
+  }
 }
 
-function feedbackButtons(msg, chatId) {
+/* ---------- Sources: numbered list that matches the [n] citations ---------- */
+function sourceTitle(s) {
+  if (s.title) return s.title;
+  const file = decodeURIComponent(s.uri.split("/").pop() || "Document").replace(/\.[^.]+$/, "");
+  return file.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
+function sourceList(sources, content) {
+  const box = document.createElement("div");
+  box.className = "sources";
+  const head = document.createElement("div");
+  head.className = "sources-head";
+  head.textContent = `Sources · ${sources.length}`;
+  box.append(head);
+  const list = document.createElement("ol");
+  sources.forEach((s, i) => {
+    const item = document.createElement("li");
+    item.className = "source-item";
+    item.dataset.cite = String(i + 1);
+    const top = document.createElement("button");
+    top.type = "button";
+    top.className = "source-top";
+    top.setAttribute("aria-expanded", "false");
+    const num = document.createElement("span");
+    num.className = "source-num";
+    num.textContent = i + 1;
+    const title = document.createElement("span");
+    title.className = "source-title";
+    title.textContent = sourceTitle(s);
+    const file = document.createElement("span");
+    file.className = "source-file";
+    file.textContent = decodeURIComponent(s.uri.split("/").pop() || "");
+    top.append(num, title, file);
+    const excerpt = document.createElement("p");
+    excerpt.className = "source-excerpt";
+    excerpt.textContent = (s.excerpt || "").replace(/\s+/g, " ").trim();
+    top.addEventListener("click", () => {
+      const open = item.classList.toggle("open");
+      top.setAttribute("aria-expanded", String(open));
+    });
+    item.append(top, excerpt);
+    list.append(item);
+  });
+  box.append(list);
+  // Clicking an inline [n] opens and highlights the matching source.
+  content.addEventListener("click", (e) => {
+    const cite = e.target.closest(".cite");
+    if (!cite) return;
+    const item = list.querySelector(`[data-cite="${cite.dataset.cite}"]`);
+    if (!item) return;
+    item.classList.add("open", "flash");
+    item.querySelector(".source-top").setAttribute("aria-expanded", "true");
+    item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setTimeout(() => item.classList.remove("flash"), 1200);
+  });
+  return box;
+}
+
+/* ---------- Feedback: 👍 / 👎 plus a written comment for the team ---------- */
+function sendFeedback(msg, chatId, body) {
+  return apiJson(`/chats/${chatId}/messages/${msg.id}/feedback`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function feedbackForm(msg, chatId) {
+  const el = document.createElement("form");
+  el.className = "feedback-form";
+  el.hidden = true;
+  el.innerHTML = `
+    <label class="feedback-label"></label>
+    <textarea rows="2" maxlength="1000" placeholder="What was wrong or missing? Your note goes to the LoanAssist team."></textarea>
+    <div class="feedback-actions">
+      <span class="feedback-hint">Don't include account numbers, PAN or other personal IDs.</span>
+      <button type="button" class="link-btn cancel">Cancel</button>
+      <button type="submit" class="small-btn">Send feedback</button>
+    </div>`;
+  const label = el.querySelector(".feedback-label");
+  const box = el.querySelector("textarea");
+  const submit = el.querySelector('button[type="submit"]');
+  const open = (reason) => {
+    label.textContent = reason === "down" ? "Sorry about that — what went wrong?" : "Share feedback on this answer";
+    el.hidden = false;
+    box.focus();
+    followStream();
+  };
+  const close = () => { el.hidden = true; box.value = ""; };
+  el.querySelector(".cancel").addEventListener("click", close);
+  el.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const comment = box.value.trim();
+    if (!comment) { box.focus(); return; }
+    submit.disabled = true;
+    try {
+      await sendFeedback(msg, chatId, { rating: msg.feedback || null, comment });
+      msg.feedbackComment = comment;
+      saveChats();
+      close();
+      el.dispatchEvent(new CustomEvent("sent"));
+      toast("Feedback sent to the LoanAssist team. Thank you!");
+    } catch {
+      toast("Couldn't send feedback. Please try again.");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  return { el, open };
+}
+
+function feedbackButtons(msg, chatId, form) {
   const group = document.createElement("span");
   group.className = "feedback";
   const up = iconButton(ICONS.thumbUp, "Good answer", "fb-up");
   const down = iconButton(ICONS.thumbDown, "Bad answer", "fb-down");
+  const write = document.createElement("button");
+  write.type = "button";
+  write.className = "feedback-write";
   const paint = () => {
     up.classList.toggle("active", msg.feedback === "up");
     down.classList.toggle("active", msg.feedback === "down");
     up.setAttribute("aria-pressed", String(msg.feedback === "up"));
     down.setAttribute("aria-pressed", String(msg.feedback === "down"));
+    write.innerHTML = `${ICONS.note}<span>${msg.feedbackComment ? "Feedback sent" : "Give feedback"}</span>`;
+    write.classList.toggle("sent", Boolean(msg.feedbackComment));
   };
   const rate = async (rating) => {
     const previous = msg.feedback || null;
@@ -604,13 +728,10 @@ function feedbackButtons(msg, chatId) {
     msg.feedback = next || undefined;
     paint();
     saveChats();
+    if (next === "down") form.open("down"); // ask what went wrong
     try {
-      await apiJson(`/chats/${chatId}/messages/${msg.id}/feedback`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rating: next }),
-      });
-      if (next) toast(next === "up" ? "Thanks for the feedback!" : "Thanks — we'll use this to improve.");
+      await sendFeedback(msg, chatId, { rating: next });
+      if (next === "up") toast("Thanks for the feedback!");
     } catch {
       msg.feedback = previous || undefined; // roll back
       paint();
@@ -620,8 +741,10 @@ function feedbackButtons(msg, chatId) {
   };
   up.addEventListener("click", () => rate("up"));
   down.addEventListener("click", () => rate("down"));
+  write.addEventListener("click", () => form.open("note"));
+  form.el.addEventListener("sent", paint);
   paint();
-  group.append(up, down);
+  group.append(up, down, write);
   return group;
 }
 
@@ -769,7 +892,7 @@ async function streamReply(body, shell) {
   let painting = false;
   const paint = () => {
     painting = false;
-    if (contentEl && shell.isConnected) { contentEl.innerHTML = renderMarkdown(tidyPartial(text)); followStream(); }
+    if (contentEl && shell.isConnected) { contentEl.innerHTML = renderMarkdown(tidyPartial(text), (meta.sources || []).length); followStream(); }
   };
   const handle = (line) => {
     let event;

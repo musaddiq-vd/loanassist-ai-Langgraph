@@ -104,7 +104,8 @@ def test_extract_cibil_score(text, expected):
     ("What is EMI?", None),  # definition, not a calculation -> LLM router
     ("What CIBIL score do I need for a home loan?", None),  # policy question -> LLM router
     ("And if I take it for 15 years instead?", None),  # follow-up needs history -> LLM router
-    ("What documents are required for a home loan?", None),
+    ("What documents are required for a home loan?", "retrieve_loan_documents"),
+    ("Explain the loan application process step by step", "retrieve_loan_documents"),
 ])
 def test_fast_route(text, expected):
     assert fast_route(text) == expected
@@ -140,3 +141,32 @@ def test_max_loan_is_inverse_of_emi():
 ])
 def test_detect_loan_type(text, expected):
     assert detect_loan_type(text) == expected
+
+
+def test_citation_questions_go_to_document_search():
+    from src.app.loan_math import asks_for_sources
+    assert asks_for_sources("could you please mention here citations")
+    assert asks_for_sources("Which document says that?")
+    assert fast_route("What is the source for this?") == "retrieve_loan_documents"
+    assert not asks_for_sources("Calculate EMI for 50 lakh")
+
+
+def test_number_passages_groups_chunks_by_document():
+    from src.app.services.bedrock import number_passages
+    results = [
+        {"content": {"text": "PAN and Aadhaar"}, "location": {"s3Location": {"uri": "s3://b/home-loan.md"}}},
+        {"content": {"text": "Minimum age 21"}, "location": {"s3Location": {"uri": "s3://b/eligibility-and-process.md"}}},
+        {"content": {"text": "Tenure up to 30 years"}, "location": {"s3Location": {"uri": "s3://b/home-loan.md"}}},
+    ]
+    context, sources = number_passages(results)
+    assert [s.title for s in sources] == ["Home loan", "Eligibility and process"]
+    assert context.startswith("[1] Home loan (home-loan.md):\nPAN and Aadhaar\nTenure up to 30 years")
+    assert "[2] Eligibility and process" in context
+
+
+def test_feedback_alert_text_is_plain_ascii_subject():
+    from src.app.services.alerts import feedback_alert_text, should_alert
+    subject, body = feedback_alert_text({"createdAt": 1793520000000, "rating": "down", "comment": "wrong rate",
+                                         "question": "q", "answer": "a", "chatId": "c", "messageId": "m", "userId": "u"})
+    assert subject.isascii() and len(subject) < 100 and "wrong rate" in body
+    assert should_alert("down", None) and should_alert(None, "note") and not should_alert("up", "  ")

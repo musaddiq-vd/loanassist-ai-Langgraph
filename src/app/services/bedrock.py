@@ -16,7 +16,43 @@ Use the supplied knowledge-base context only for product and policy claims.
 Tool results in the context (for example an EMI estimate) are already calculated and correct:
 state those numbers directly and do not ask the customer to confirm values that appear there.
 Ask for missing details only when the context says something is missing.
+Citations: knowledge-base passages are numbered like [1], [2]. Put the matching number in square brackets
+right after each policy fact you take from a passage, e.g. "PAN and Aadhaar are required [1]."
+Only use numbers that appear in the context. Never invent document names, section numbers, page numbers
+or sources. If the context has no numbered passages, do not add citations.
 Be concise, and never promise approval or give legal/financial advice."""
+
+
+def _document_title(uri: str | None) -> str:
+    """'s3://bucket/home-loan.md' -> 'Home loan'."""
+    name = (uri or "Document").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return name.replace("-", " ").replace("_", " ").strip().capitalize() or "Document"
+
+
+def number_passages(results: list[dict[str, Any]]) -> tuple[str, list[Source]]:
+    """Group retrieved chunks by document and number the documents [1], [2], ...
+
+    The numbers in the context match the order of the returned sources, so the
+    model's inline [n] citations line up with the numbered source list in the UI.
+    """
+    order: list[str] = []
+    grouped: dict[str, list[str]] = {}
+    for item in results:
+        text = (item.get("content") or {}).get("text", "").strip()
+        location = item.get("location") or {}
+        uri = (location.get("s3Location") or {}).get("uri") or (location.get("webLocation") or {}).get("url") or "unknown"
+        if not text:
+            continue
+        if uri not in grouped:
+            order.append(uri)
+            grouped[uri] = []
+        grouped[uri].append(text)
+    blocks, sources = [], []
+    for number, uri in enumerate(order, start=1):
+        passage = "\n".join(grouped[uri])
+        blocks.append(f"[{number}] {_document_title(uri)} ({uri.rsplit('/', 1)[-1]}):\n{passage}")
+        sources.append(Source(title=_document_title(uri), uri=uri, excerpt=passage[:600]))
+    return "\n\n".join(blocks), sources
 
 
 class BedrockService:
@@ -47,15 +83,7 @@ class BedrockService:
         if loan_type and not response.get("retrievalResults"):
             # Nothing tagged for this loan type: fall back to searching everything.
             response = search(None)
-        sources: list[Source] = []
-        chunks: list[str] = []
-        for item in response.get("retrievalResults", []):
-            text = item.get("content", {}).get("text", "")
-            location = item.get("location", {})
-            uri = location.get("s3Location", {}).get("uri") or location.get("webLocation", {}).get("url")
-            chunks.append(text)
-            sources.append(Source(uri=uri, excerpt=text[:280]))
-        return "\n\n".join(chunks), sources
+        return number_passages(response.get("retrievalResults", []))
 
     def extract_emi_params(self, question: str, history: list[str]) -> dict[str, Any] | None:
         """Ask the model to fill a strict EMI-inputs tool, so '50 lakh', '1.2 crore',

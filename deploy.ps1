@@ -1,10 +1,12 @@
 # One-command deployment for LoanAssist AI.
 # Usage:  .\deploy.ps1            (stack "loanassist-ai" in us-east-1)
 #         .\deploy.ps1 -StackName my-stack -Region us-west-2
+#         .\deploy.ps1 -AlertEmail team@example.com   (who gets feedback alerts; remembered for later deploys)
 
 param(
     [string]$StackName = "loanassist-ai",
-    [string]$Region = "us-east-1"
+    [string]$Region = "us-east-1",
+    [string]$AlertEmail = $env:LOANASSIST_ALERT_EMAIL
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,9 +22,23 @@ function Invoke-Step([string]$Title, [scriptblock]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "$Title failed (exit code $LASTEXITCODE)" }
 }
 
+# Keep the alert email from the previous deploy unless a new one is given.
+if (-not $AlertEmail) {
+    $previous = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    $AlertEmail = aws cloudformation describe-stacks --stack-name $StackName --region $Region `
+        --query "Stacks[0].Parameters[?ParameterKey=='AlertEmail'].ParameterValue | [0]" --output text 2>$null
+    $ErrorActionPreference = $previous
+    if ($LASTEXITCODE -ne 0 -or $AlertEmail -eq "None") { $AlertEmail = "" }
+}
+$overrides = @()
+if ($AlertEmail) { $overrides = @("--parameter-overrides", "AlertEmail=$AlertEmail") }
+
 Invoke-Step "Building backend" { sam build }
 Invoke-Step "Deploying stack '$StackName' to $Region" {
-    sam deploy --stack-name $StackName --region $Region
+    sam deploy --stack-name $StackName --region $Region @overrides
+}
+if ($AlertEmail) {
+    Write-Host "Feedback alerts go to $AlertEmail (confirm the AWS subscription email once)." -ForegroundColor Yellow
 }
 
 Write-Host ""
