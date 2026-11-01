@@ -26,11 +26,10 @@ if ($answer -ne $StackName) { Write-Host "Cancelled."; exit 1 }
 $outputs = @{}
 $json = aws cloudformation describe-stacks --stack-name $StackName --region $Region --query "Stacks[0].Outputs" --output json 2>$null
 if ($LASTEXITCODE -eq 0 -and $json) { foreach ($o in (($json | Out-String) | ConvertFrom-Json)) { $outputs[$o.OutputKey] = $o.OutputValue } }
-$fn = aws cloudformation describe-stack-resource --stack-name $StackName --region $Region --logical-resource-id LoanAssistFunction `
-    --query "StackResourceDetail.PhysicalResourceId" --output text 2>$null
+$functions = @($outputs.LoanAssistFunction, $outputs.DocumentWorkerFunction) | Where-Object { $_ }
 
 # 1) Buckets must be empty before CloudFormation can delete them.
-foreach ($bucket in @($outputs.FrontendBucket, $outputs.DocsBucket)) {
+foreach ($bucket in @($outputs.FrontendBucket, $outputs.DocsBucket, $outputs.UploadsBucket)) {
     if ($bucket) { Run "Emptying s3://$bucket" { aws s3 rm "s3://$bucket" --recursive --region $Region --only-show-errors } }
 }
 
@@ -40,8 +39,8 @@ Run "Deleting stack $StackName (CloudFront can take 10-15 minutes)" {
 }
 
 # 3) Things CloudFormation does not own.
-if ($fn -and $fn -ne "None") {
-    Run "Deleting Lambda log group" { aws logs delete-log-group --log-group-name "/aws/lambda/$fn" --region $Region 2>$null }
+foreach ($fn in $functions) {
+    Run "Deleting log group of $fn" { aws logs delete-log-group --log-group-name "/aws/lambda/$fn" --region $Region 2>$null }
 }
 Run "Deleting LangSmith key parameter (if any)" { aws ssm delete-parameter --name /loanassist/langsmith-api-key --region $Region 2>$null }
 
