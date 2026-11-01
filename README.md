@@ -12,8 +12,10 @@
 ![Serverless](https://img.shields.io/badge/Serverless-Lambda-FF9900?logo=awslambda&logoColor=white)
 ![Cognito](https://img.shields.io/badge/Auth-Cognito-DD344C?logo=amazonaws&logoColor=white)
 ![DynamoDB](https://img.shields.io/badge/History-DynamoDB-4053D6?logo=amazondynamodb&logoColor=white)
+![CI](https://github.com/musaddiq-vd/loanassist-ai-Langgraph/actions/workflows/ci.yml/badge.svg)
+![Evals](https://img.shields.io/badge/golden%20set-50%2F50%20passing-2ea44f)
 
-[Screenshots](#-screenshots) · [Features](#-features) · [Architecture](#-architecture) · [Deploy](#-deploy-in-one-command) · [Cost](#-cost-breakdown) · [API](#-api) · [Run locally](#-run-locally)
+[Screenshots](#-screenshots) · [Features](#-features) · [Architecture](#-architecture) · [Deploy](#-deploy-in-one-command) · [Cost](#-cost-breakdown) · [Evals](#-evaluation--observability) · [API](#-api) · [Run locally](#-run-locally)
 
 <br/>
 
@@ -39,6 +41,8 @@
   </tr>
 </table>
 
+<p><img src="docs/screenshots/emi-card.png" alt="Interactive EMI card with sliders, yearly principal vs interest chart and repayment table"/><br/><sub><b>Interactive EMI card</b> — sliders, live EMI, year-by-year principal vs interest chart and repayment table</sub></p>
+
 <sub>Screenshots use sample chats; answers are the same ones the deployed app returned for these questions.</sub>
 
 ---
@@ -49,7 +53,8 @@
 |---|---|
 | 🤖 **Agentic routing** | A LangGraph router sends each question to the right tool: document search, EMI calculator, eligibility check, customer lookup or a direct answer. |
 | 📚 **RAG over your documents** | Drop PDFs/DOCX/MD into `knowledge-base/`; they are embedded with Titan V2, stored in **S3 Vectors** and filtered by loan type. |
-| 🧮 **Smart EMI calculator** | Nova tool-calling understands *50 lakh*, *1.2 crore*, *25 saal*, any word order and follow-ups like *"and for 15 years?"*; a rule-based parser backs it up. |
+| 🧮 **Smart EMI calculator** | Nova tool-calling understands *50 lakh*, *1.2 crore*, *25 saal*, any word order and follow-ups like *"and for 15 years?"*; a rule-based parser backs it up. The EMI text is written by code, so the numbers are always exact. |
+| 🎚️ **Interactive EMI card** | Under every EMI answer: sliders for amount, rate and tenure, live EMI and total interest, a year-by-year principal vs interest chart with hover, and a repayment table. |
 | 🧑‍⚖️ **Human-in-the-loop** | Low CIBIL scores are flagged for loan-officer review — no automatic decisions. Only numbers written next to "CIBIL"/"credit score" count. |
 | 🛡️ **Guardrails** | Bedrock Guardrails filter hate, insults, sexual content, violence, misconduct and prompt attacks on the user's question and on every answer. |
 | ⚡ **Fast routing** | Clear EMI and CIBIL questions skip the LLM router entirely. |
@@ -58,7 +63,7 @@
 | ✨ **Smart chat names** | Chats are named from the first question, e.g. *EMI · ₹50,00,000 at 8.5% for 20 yrs* or *Eligibility · CIBIL 620*. |
 | ⚡ **Streaming answers** | Answers appear word by word (Bedrock ConverseStream → API Gateway REST response streaming), with an automatic fallback to the normal endpoint. |
 | 📎 **Salary slip / bank statement check** | Upload a PDF or image; Nova Lite reads the income and EMIs, and LoanAssist shows debt-to-income, room for a new EMI and an estimated max loan. Ask follow-up questions about the document in the same chat. |
-| 📑 **Real citations** | Answers cite the policy documents inline as [1], [2]; a numbered *Sources* list under the answer opens the exact passage. Asking *“mention citations”* rebuilds the answer from the documents. |
+| 📑 **Real citations** | Answers cite the policy documents inline as [1], [2]; a numbered *Sources* list under the answer shows the document, section and **page number** (for PDFs) and opens the exact passage. Asking *“mention citations”* rebuilds the answer from the documents. |
 | 👍 **Answer feedback** | Thumbs up/down plus a written *Give feedback* note on every answer. Saved in DynamoDB; a 👎 or a note emails the team. |
 | 🕒 **Timestamps** | Every message shows its time, with *Today / Yesterday* dividers. |
 | 💬 **Clean chat UI** | Sidebar history, markdown answers and tables, source chips, tool tags, copy button, suggestion prompts, light/dark toggle, mobile friendly. |
@@ -251,15 +256,51 @@ The first deploy takes ~10–15 minutes (mostly CloudFront). Later deploys are f
 | Backend code, template or UI | `.\deploy.ps1` |
 | Documents in `knowledge-base/` | `.\deploy.ps1` (re-syncs the Knowledge Base) |
 
-### Tear down
+### 🧹 Delete everything (stop all charges)
 
-This deletes everything, **including all users and their chat history**. CloudFormation cannot delete non-empty buckets, so empty them first (names are in the stack outputs):
+> [!CAUTION]
+> **Delete the stack when you are done testing, or AWS keeps billing you.** Most resources are pay-per-use, but stored data (S3, S3 Vectors, DynamoDB, CloudWatch logs) and any traffic still cost money. Deleting the stack removes **all users, chat history, document facts, feedback and the knowledge base** — it cannot be undone.
+
+**Option A — one command** (asks you to type the stack name, deletes, then verifies):
 
 ```powershell
+.\destroy.ps1
+```
+
+**Option B — step by step:**
+
+```powershell
+# 1. Note the names (buckets, Lambda) before deleting
+aws cloudformation describe-stacks --stack-name loanassist-ai --query "Stacks[0].Outputs" --output table
+
+# 2. Empty the two buckets (CloudFormation can't delete non-empty buckets)
 aws s3 rm s3://<FrontendBucket> --recursive
 aws s3 rm s3://<DocsBucket> --recursive
-sam delete --stack-name loanassist-ai
+
+# 3. Delete the stack (CloudFront takes ~10–15 minutes)
+sam delete --stack-name loanassist-ai --no-prompts
+
+# 4. Delete what CloudFormation doesn't own
+aws logs delete-log-group --log-group-name /aws/lambda/<LoanAssistFunction name>
+aws ssm delete-parameter --name /loanassist/langsmith-api-key   # only if you set up LangSmith
 ```
+
+**Verify nothing is left** — every command below should print nothing (the first one should say the stack does not exist):
+
+```powershell
+aws cloudformation describe-stacks --stack-name loanassist-ai
+aws s3api list-buckets --query "Buckets[?starts_with(Name, 'loanassist-ai-')].Name" --output text
+aws bedrock-agent list-knowledge-bases --query "knowledgeBaseSummaries[?name=='loanassist-ai-kb'].knowledgeBaseId" --output text
+aws dynamodb list-tables --query "TableNames[?starts_with(@, 'loanassist-ai-')]" --output text
+aws cognito-idp list-user-pools --max-results 60 --query "UserPools[?Name=='loanassist-ai-users'].Id" --output text
+aws sns list-topics --query "Topics[?contains(TopicArn, ':loanassist-ai-')].TopicArn" --output text
+aws logs describe-log-groups --log-group-name-prefix /aws/lambda/loanassist-ai- --query "logGroups[].logGroupName" --output text
+```
+
+> [!NOTE]
+> `sam deploy` also created a small shared bucket for build artifacts (stack **`aws-sam-cli-managed-default`**). It costs cents and other SAM projects may use it. To remove it too: empty the bucket shown in that stack's outputs, then `aws cloudformation delete-stack --stack-name aws-sam-cli-managed-default`.
+>
+> Finally, check **AWS Billing → Bills** the next day to confirm no LoanAssist charges remain.
 
 ### What gets created
 
@@ -336,6 +377,16 @@ Assumptions per chat message: Nova Lite ≈ 1,700 input + 320 output tokens (cle
 - Create an **AWS Budget** alert, e.g. at $10/month.
 
 ---
+
+## 🧪 Evaluation & observability
+
+| | Where | What you get |
+|---|---|---|
+| **Golden-set evals** | [`evals/`](evals/) — locally and in **GitHub Actions** on every push/PR | 50 fixed questions (EMI, eligibility, policy, citations, salary slip, safety) with deterministic checks + an LLM judge. Fails the build on a regression. Current: **50/50, grounded 5/5, p50 1.8 s**. |
+| **Tracing** | **LangSmith** (optional) | Every request as a trace: LangGraph nodes → `kb_retrieve`, `nova_router`, `nova_answer_stream`… with per-step timings, inputs and outputs. |
+| **Experiments** | **LangSmith** (`run_evals.py --langsmith`) | Each eval run as an experiment on the `loanassist-golden-set` dataset, compared side by side. |
+
+**Rule of thumb: gate quality in CI, look at timings and compare experiments in LangSmith.** The first eval run found real bugs (an LLM-typed EMI that didn't match the maths, invented `[n]` citations, mis-routed policy questions); fixing them took the score from 70% to 100%. See **[evals/README.md](evals/README.md)** for how to run it, add LangSmith and switch on the CI evals.
 
 ## 🔌 API
 
@@ -448,6 +499,7 @@ loanassist-ai/
 │       ├── agent.py       # LangGraph state, tools and routing
 │       ├── documents.py   # Salary slip / bank statement summary
 │       ├── loan_math.py   # EMI parsing/maths, CIBIL + loan-type detection, fast routing
+│       ├── observability.py # optional LangSmith tracing
 │       ├── config.py      # Environment settings
 │       ├── schemas.py     # Request / response models
 │       └── services/
@@ -456,6 +508,9 @@ loanassist-ai/
 ├── template.yaml          # All AWS infrastructure (SAM)
 ├── samconfig.toml         # Deploy defaults (no secrets)
 ├── deploy.ps1             # One-command deploy
+├── destroy.ps1            # Delete everything + verify (stops all charges)
+├── evals/                 # 50-case golden set, runner, results (see evals/README.md)
+├── .github/workflows/     # CI: tests on every push, evals when AWS access is set up
 ├── tests/                 # pytest: loan maths, CIBIL, routing, API, streaming, documents
 ├── run.sh                 # Lambda start-up (uvicorn behind the Lambda Web Adapter)
 ├── docs/                  # architecture diagram, screenshots, sample salary slip
@@ -539,5 +594,7 @@ Run `.\deploy.ps1` again (it invalidates the cache), then hard-refresh with `Ctr
 - [ ] Real CRM / core-banking integration for customer details (no raw PII to the LLM)
 - [x] Guardrail on user input only (`guardContent`) to cut cost
 - [x] LLM tool-calling for EMI inputs, stricter CIBIL detection, loan-type filter
+- [x] Streaming, salary-slip check, feedback + alerts, interactive EMI card
+- [x] 50-case eval suite in CI, LangSmith tracing
 - [ ] CloudWatch alarms, dashboard and log retention
 - [ ] Custom domain (ACM + Route 53) and optional AWS WAF

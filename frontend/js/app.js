@@ -215,7 +215,10 @@ function makeTitle(text) {
 
   // EMI questions -> "EMI · ₹50,00,000 at 8.5% for 20 yrs"
   if (/\bemi\b/.test(lower)) {
-    const amount = (q.replace(/,/g, "").match(/\b\d{4,}\b/) || [])[0];
+    const unit = q.match(/(\d+(?:\.\d+)?)\s*(crores?|cr|lakhs?|lacs?|lac)\b/i);
+    const amount = unit
+      ? Math.round(Number(unit[1]) * (/^c/i.test(unit[2]) ? 1e7 : 1e5))
+      : (q.replace(/,/g, "").match(/\b\d{4,}\b/) || [])[0];
     const rate = (q.match(/(\d+(?:\.\d+)?)\s*%/) || [])[1];
     const years = (q.match(/(\d+)\s*(?:years?|yrs?)/i) || [])[1];
     const parts = [amount && inr(amount), rate && `at ${rate}%`, years && `for ${years} yrs`].filter(Boolean);
@@ -565,6 +568,7 @@ function fillAssistant(el, msg, chatId) {
   content.innerHTML = renderMarkdown(data.answer || msg.text || "", sources.length);
   body.append(content);
   if (sources.length) body.append(sourceList(sources, content));
+  if (data.emi && !msg.error) body.append(emiCard(data.emi));
 
   const meta = document.createElement("div");
   meta.className = "meta";
@@ -593,6 +597,134 @@ function fillAssistant(el, msg, chatId) {
     meta.append(feedbackButtons(msg, chatId, form));
     body.append(form.el);
   }
+}
+
+/* ---------- Interactive EMI card: sliders, chart, year-by-year table ---------- */
+const rupees = (n) => "₹" + Math.round(n).toLocaleString("en-IN");
+function shortRupees(n) {
+  if (n >= 1e7) return `₹${+(n / 1e7).toFixed(2)} Cr`;
+  if (n >= 1e5) return `₹${+(n / 1e5).toFixed(2)} L`;
+  return rupees(n);
+}
+function emiFor(principal, rate, months) {
+  const r = rate / 1200;
+  if (!r) return principal / months;
+  const g = Math.pow(1 + r, months);
+  return (principal * r * g) / (g - 1);
+}
+// Year-by-year split of what you pay: [{ year, principal, interest, balance }]
+function amortizeByYear(principal, rate, months) {
+  const emi = emiFor(principal, rate, months);
+  const r = rate / 1200;
+  const years = [];
+  let balance = principal;
+  for (let m = 1; m <= months; m++) {
+    const interest = balance * r;
+    const paid = Math.min(emi - interest, balance);
+    balance = Math.max(balance - paid, 0);
+    const y = Math.ceil(m / 12) - 1;
+    years[y] = years[y] || { year: y + 1, principal: 0, interest: 0, balance: 0 };
+    years[y].principal += paid;
+    years[y].interest += interest;
+    years[y].balance = balance;
+  }
+  return years;
+}
+
+function emiCard(initial) {
+  const state = {
+    principal: Math.min(Math.max(Math.round(initial.principal / 50000) * 50000, 100000), 50000000),
+    rate: Math.min(Math.max(initial.annual_rate, 5), 20),
+    years: Math.min(Math.max(Math.round(initial.months / 12), 1), 30),
+  };
+  const card = document.createElement("section");
+  card.className = "emi-card";
+  card.innerHTML = `
+    <div class="emi-head">
+      <div><div class="emi-label">Monthly EMI</div><div class="emi-value" data-k="emi"></div></div>
+      <div class="emi-stats">
+        <div><span>Total interest</span><b data-k="interest"></b></div>
+        <div><span>Total payment</span><b data-k="total"></b></div>
+      </div>
+    </div>
+    <div class="emi-sliders">
+      <label><span>Loan amount <b data-k="principalLabel"></b></span>
+        <input type="range" data-s="principal" min="100000" max="50000000" step="50000" aria-label="Loan amount"></label>
+      <label><span>Interest rate <b data-k="rateLabel"></b></span>
+        <input type="range" data-s="rate" min="5" max="20" step="0.05" aria-label="Interest rate"></label>
+      <label><span>Tenure <b data-k="yearsLabel"></b></span>
+        <input type="range" data-s="years" min="1" max="30" step="1" aria-label="Tenure in years"></label>
+    </div>
+    <div class="emi-chart">
+      <div class="emi-chart-head">
+        <span>What you pay each year</span>
+        <span class="emi-legend"><i class="sw principal"></i>Principal <i class="sw interest"></i>Interest</span>
+      </div>
+      <div class="emi-plot"><svg viewBox="0 0 600 170" preserveAspectRatio="none" role="img" aria-label="Principal and interest paid per year"></svg><div class="emi-tip" hidden></div></div>
+    </div>
+    <details class="emi-table"><summary>Year-by-year repayment table</summary><div class="table-wrap"><table>
+      <thead><tr><th>Year</th><th class="num">Principal</th><th class="num">Interest</th><th class="num">Balance left</th></tr></thead>
+      <tbody></tbody></table></div></details>`;
+  const $k = (k) => card.querySelector(`[data-k="${k}"]`);
+  const svg = card.querySelector("svg");
+  const tip = card.querySelector(".emi-tip");
+  card.querySelectorAll("input[type=range]").forEach((input) => {
+    input.value = state[input.dataset.s];
+    input.addEventListener("input", () => { state[input.dataset.s] = +input.value; draw(); });
+  });
+
+  function draw() {
+    const months = state.years * 12;
+    const emi = emiFor(state.principal, state.rate, months);
+    const total = emi * months;
+    $k("emi").textContent = rupees(emi);
+    $k("interest").textContent = shortRupees(total - state.principal);
+    $k("total").textContent = shortRupees(total);
+    $k("principalLabel").textContent = shortRupees(state.principal);
+    $k("rateLabel").textContent = `${state.rate.toFixed(2)}%`;
+    $k("yearsLabel").textContent = `${state.years} yr${state.years > 1 ? "s" : ""}`;
+
+    const rows = amortizeByYear(state.principal, state.rate, months);
+    // Stacked bars: principal at the baseline, interest on top, 2px gap between segments.
+    const W = 600, H = 170, top = 8, bottom = 18;
+    const max = Math.max(...rows.map((r) => r.principal + r.interest));
+    const slot = W / rows.length;
+    const bw = Math.max(Math.min(slot * 0.68, 26), 3);
+    const scale = (v) => (v / max) * (H - top - bottom);
+    let html = `<line x1="0" x2="${W}" y1="${H - bottom}" y2="${H - bottom}" class="emi-axis"/>`;
+    rows.forEach((r, i) => {
+      const x = i * slot + (slot - bw) / 2;
+      const hp = scale(r.principal), hi = scale(r.interest);
+      const yP = H - bottom - hp, yI = yP - 2 - hi;
+      html += `<g class="emi-bar" data-i="${i}">
+        <rect class="hit" x="${i * slot}" y="0" width="${slot}" height="${H}"/>
+        <rect class="principal" x="${x}" y="${yP}" width="${bw}" height="${Math.max(hp, 0)}" rx="2"/>
+        <rect class="interest" x="${x}" y="${yI}" width="${bw}" height="${Math.max(hi, 0)}" rx="${Math.min(4, bw / 2)}"/>
+      </g>`;
+      const every = rows.length > 20 ? 5 : rows.length > 10 ? 2 : 1;
+      if ((i + 1) % every === 0 || i === 0) html += `<text x="${i * slot + slot / 2}" y="${H - 4}" class="emi-tick">${r.year}</text>`;
+    });
+    svg.innerHTML = html;
+    svg.querySelectorAll(".emi-bar").forEach((g) => {
+      const r = rows[+g.dataset.i];
+      const show = () => {
+        tip.hidden = false;
+        tip.innerHTML = `<b>Year ${r.year}</b><span><i class="sw principal"></i>Principal ${rupees(r.principal)}</span><span><i class="sw interest"></i>Interest ${rupees(r.interest)}</span><span>Balance ${rupees(r.balance)}</span>`;
+        const pct = ((+g.dataset.i + 0.5) / rows.length) * 100;
+        tip.style.left = `${Math.min(Math.max(pct, 18), 82)}%`;
+        g.classList.add("on");
+      };
+      const hide = () => { tip.hidden = true; g.classList.remove("on"); };
+      g.addEventListener("mouseenter", show);
+      g.addEventListener("mouseleave", hide);
+      g.addEventListener("touchstart", show, { passive: true });
+    });
+    card.querySelector("tbody").innerHTML = rows
+      .map((r) => `<tr><td>${r.year}</td><td class="num">${rupees(r.principal)}</td><td class="num">${rupees(r.interest)}</td><td class="num">${rupees(r.balance)}</td></tr>`)
+      .join("");
+  }
+  draw();
+  return card;
 }
 
 /* ---------- Sources: numbered list that matches the [n] citations ---------- */
@@ -626,7 +758,13 @@ function sourceList(sources, content) {
     title.textContent = sourceTitle(s);
     const file = document.createElement("span");
     file.className = "source-file";
-    file.textContent = decodeURIComponent(s.uri.split("/").pop() || "");
+    // "Documents required · p. 3 · home-loan.pdf"
+    const where = [];
+    if (s.sections && s.sections.length) where.push(s.sections[0]);
+    if (s.pages && s.pages.length) where.push(`p. ${s.pages.join(", ")}`);
+    where.push(decodeURIComponent(s.uri.split("/").pop() || ""));
+    file.textContent = where.join(" · ");
+    file.title = [...(s.sections || []), ...(s.pages || []).map((p) => `page ${p}`)].join(" · ");
     top.append(num, title, file);
     const excerpt = document.createElement("p");
     excerpt.className = "source-excerpt";

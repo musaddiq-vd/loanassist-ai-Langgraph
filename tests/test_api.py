@@ -2,6 +2,7 @@
 
 import base64
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,7 +29,7 @@ class FakeBedrock:
         self.contexts.append(context)
         return f"answer to: {question}"
 
-    def generate_stream(self, question, context, history=None):
+    def generate_stream(self, question, context, history=None, **_):
         self.contexts.append(context)
         yield "Hello "
         yield "world"
@@ -166,3 +167,17 @@ def test_citation_follow_up_searches_previous_question(client):
     client.post("/api/v1/chat", json={"message": "What documents do I need for a home loan?", "session_id": "s1"})
     client.post("/api/v1/chat", json={"message": "could you please mention citations", "session_id": "s1"})
     assert "What documents do I need for a home loan?" in calls[-1]
+
+
+def test_tracing_on_never_breaks_requests(client, monkeypatch):
+    """With LangSmith 'on' but unreachable, chat and streaming still work."""
+    from src.app import observability
+    monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setattr(observability, "_enabled", True)
+    assert client.post("/api/v1/chat", json={"message": "hi", "session_id": "t1"}).status_code == 200
+    started = time.time()
+    with client.stream("POST", "/api/v1/chat/stream", json={"message": "hi", "session_id": "t2"}) as r:
+        types = [json.loads(line)["type"] for line in r.iter_lines() if line]
+    assert types[0] == "meta" and types[-1] == "done"
+    assert time.time() - started < 10  # flush never blocks for long

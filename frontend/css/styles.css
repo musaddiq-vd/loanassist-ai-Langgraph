@@ -353,6 +353,49 @@ button, input { font: inherit; color: inherit; }
 .source-item.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { 0% { background: rgba(194, 96, 58, 0.18); } 100% { background: transparent; } }
 
+/* ================= Interactive EMI card ================= */
+:root { --s-principal: #2f6fd6; --s-interest: #c2603a; }
+:root[data-theme="dark"] { --s-principal: #5585dc; --s-interest: #d2734d; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-principal: #5585dc; --s-interest: #d2734d; } }
+.emi-card { margin: 12px 0 4px; padding: 16px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+.emi-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.emi-label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.emi-value { font-family: var(--serif); font-size: 30px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.emi-stats { display: flex; gap: 18px; }
+.emi-stats div { display: flex; flex-direction: column; align-items: flex-end; }
+.emi-stats span { color: var(--muted); font-size: 12px; }
+.emi-stats b { font-size: 15px; font-variant-numeric: tabular-nums; }
+.emi-sliders { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 14px 0 10px; }
+.emi-sliders label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.emi-sliders label span { display: flex; justify-content: space-between; gap: 6px; }
+.emi-sliders b { color: var(--text); font-variant-numeric: tabular-nums; }
+.emi-sliders input[type=range] { width: 100%; accent-color: var(--accent); }
+.emi-chart-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; color: var(--muted); font-size: 12.5px; }
+.emi-legend { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 10px; height: 10px; margin-left: 6px; border-radius: 3px; }
+.sw.principal { background: var(--s-principal); } .sw.interest { background: var(--s-interest); }
+.emi-plot { position: relative; }
+.emi-plot svg { display: block; width: 100%; height: 170px; overflow: visible; }
+.emi-axis { stroke: var(--border); stroke-width: 1; }
+.emi-tick { fill: var(--muted); font-size: 10px; text-anchor: middle; }
+.emi-bar rect.principal { fill: var(--s-principal); }
+.emi-bar rect.interest { fill: var(--s-interest); }
+.emi-bar rect.hit { fill: transparent; }
+.emi-bar.on rect.principal, .emi-bar.on rect.interest { opacity: 0.8; }
+.emi-tip {
+  position: absolute; top: 0; transform: translateX(-50%); z-index: 2; display: flex; flex-direction: column; gap: 2px;
+  padding: 7px 10px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 12px; pointer-events: none; white-space: nowrap;
+}
+.emi-tip[hidden] { display: none; }
+.emi-tip .sw { margin: 0 5px 0 0; }
+.emi-table { margin-top: 10px; font-size: 14px; }
+.emi-table summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.emi-table summary:hover { color: var(--text); }
+.emi-table .table-wrap { max-height: 260px; overflow: auto; margin-top: 8px; }
+.emi-table table { width: 100%; font-size: 13px; }
+.emi-table tbody tr:last-child td { font-weight: 400; }
+@media (max-width: 600px) { .emi-sliders { grid-template-columns: 1fr; } .emi-stats { gap: 12px; } }
+
 /* ================= Written feedback ================= */
 .feedback-write {
   display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 10px; margin-left: 2px;

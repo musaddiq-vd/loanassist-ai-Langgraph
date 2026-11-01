@@ -244,9 +244,18 @@ def extract_cibil_score(text: str) -> int | None:
     for pattern in (_CIBIL_AFTER_WORD, _CIBIL_BEFORE_WORD):
         for match in pattern.finditer(text):
             score = int(match.group(1))
+            # "if my score is below 650", "minimum score 700" are thresholds, not the user's score.
+            before = text[max(0, match.start(1) - 30):match.start(1)].lower()
+            if re.search(r"\b(below|under|less than|above|over|more than|at least|minimum|min|threshold|required|needed)\b", before):
+                continue
             if 300 <= score <= 900:
                 return score
     return None
+
+
+def strip_citations(text: str) -> str:
+    """Remove [n] markers (used when an answer has no sources behind it)."""
+    return re.sub(r"\s?\[\d{1,2}(?:\s*,\s*\d{1,2})*\]", "", text)
 
 
 # --------------------------------------------------------------------------- fast routing
@@ -274,7 +283,9 @@ def fast_route(question: str, has_documents: bool = False) -> str | None:
     if has_documents and re.search(r"\b(eligib\w*|afford\w*|borrow|how much (loan|can i)|can i get)\b", lower):
         return "check_loan_eligibility"  # uses the uploaded income for a debt-to-income check
     if has_documents and re.search(
-        r"\b(salary slip|payslip|pay slip|bank statement|statement|document|uploaded|deductions?|allowances?|my (net |gross )?(income|salary))\b",
+        r"\b(salary slip|payslip|pay slip|bank statement|statement|document|uploaded|deductions?|allowances?|"
+        r"take[- ]home|net pay|gross pay|basic (pay|salary)|employer|company|tds|provident fund|pf|"
+        r"my (net |gross |monthly )?(income|salary|pay))\b",
         lower,
     ):
         return "document_question"
@@ -282,7 +293,12 @@ def fast_route(question: str, has_documents: bool = False) -> str | None:
         return "calculate_emi"
     if extract_cibil_score(question) is not None:
         return "check_loan_eligibility"
-    if re.search(r"\b(process|procedure|steps?|how (do i|to|can i) apply|documents?|papers|kyc|required|prepayment|foreclos\w*|tenure|processing fee)\b", lower):
+    if re.search(
+        r"\b(process|procedure|steps?|how (do i|to|can i) apply|documents?|papers|kyc|required|prepayment|foreclos\w*|tenure|"
+        r"processing fee|fees?|charges?|loan[- ]to[- ]value|ltv|minimum|maximum|max|min|age|collateral|valuation|"
+        r"criteria|policy|share of|percent(age)? of|foir|debt[- ]to[- ]income|final (loan )?decision|who (approves|decides))\b",
+        lower,
+    ):
         return "retrieve_loan_documents"  # policy / process questions are answered from the documents
     return None
 

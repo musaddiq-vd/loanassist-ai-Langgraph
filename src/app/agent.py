@@ -5,6 +5,7 @@ from langgraph.graph import END, START, StateGraph
 from src.app.loan_math import (
     affordability,
     asks_for_sources,
+    strip_citations,
     calculate_emi as calculate_emi_amount,
     describe_affordability,
     detect_loan_type,
@@ -41,6 +42,7 @@ class LoanState(TypedDict, total=False):
     answer: str
     tool_used: str
     requires_human_review: bool
+    emi: dict[str, Any]  # inputs + result for the interactive EMI card
 
 
 def latest_income_document(documents: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -66,7 +68,7 @@ def describe_documents(documents: list[dict[str, Any]]) -> str:
                               ("eligible_income", "income before loan EMIs"), ("existing_emis_monthly", "existing EMIs"))
             if doc.get(key) is not None
         ]
-        parts.append(f"{header}. {'; '.join(figures)}. Key facts: {doc.get('key_facts', '')}")
+        parts.append(f"{header}. {'; '.join(figures)}.\nEvery line item read from the document (complete list): {doc.get('key_facts', '')}")
     return "\n".join(parts)
 
 
@@ -129,6 +131,17 @@ def build_loan_agent(bedrock: BedrockService):
                 f"total interest {format_inr(round(total_interest))}. This is an estimate; fees and final rates can change it."
             ),
             "tool_used": "calculate_emi",
+            # Numbers come straight from the maths, never re-typed by the LLM (it once wrote a wrong EMI).
+            "answer": (
+                f"For a **{format_inr(inputs.principal)}** loan at **{inputs.annual_rate:g}%** p.a. for "
+                f"**{format_tenure(inputs.tenure_months)}**, the estimated monthly EMI is **{format_inr(round(emi, 2))}**.\n\n"
+                f"Total interest over the loan: **{format_inr(round(total_interest))}** "
+                f"(total payment {format_inr(round(emi * inputs.tenure_months))}).\n\n"
+                "Move the sliders below to try other amounts, rates or tenures. "
+                "_This is an estimate; processing fees and the final sanctioned rate can change it._"
+            ),
+            "emi": {"principal": inputs.principal, "annual_rate": inputs.annual_rate, "months": inputs.tenure_months,
+                    "emi": round(emi, 2), "total_interest": round(total_interest, 2)},
         }
 
     def check_eligibility(state: LoanState) -> LoanState:
@@ -157,11 +170,13 @@ def build_loan_agent(bedrock: BedrockService):
             }
         if score is None:
             facts.append("CIBIL score not shared yet; it is also needed for a full check.")
+        facts.append("This is only a preliminary view: LoanAssist cannot approve or reject loans; a loan officer decides.")
         return {"context": " ".join(facts), "tool_used": "check_loan_eligibility"}
 
     def document_question(state: LoanState) -> LoanState:
         documents = state.get("documents", [])
-        context = describe_documents(documents)
+        context = ("Answer from the uploaded document below. When listing items (deductions, allowances, credits), "
+                   "include every matching line item, including loan EMI deductions, with its amount.\n" + describe_documents(documents))
         doc = latest_income_document(documents)
         if doc:
             a = affordability(doc["eligible_income"], doc.get("existing_emis_monthly") or 0)
@@ -176,9 +191,12 @@ def build_loan_agent(bedrock: BedrockService):
         return {"answer": HUMAN_REVIEW_ANSWER, "requires_human_review": True}
 
     def generate_answer(state: LoanState) -> LoanState:
+        if state.get("answer"):
+            return {}  # a tool already wrote an exact answer (EMI maths)
         if state.get("defer_answer"):
             return {}  # the streaming endpoint writes the answer itself
-        return {"answer": bedrock.generate(state["question"], state.get("context", ""), state.get("history", []))}
+        answer = bedrock.generate(state["question"], state.get("context", ""), state.get("history", []))
+        return {"answer": answer if state.get("sources") else strip_citations(answer)}
 
     def route_after_eligibility(state: LoanState) -> str:
         return "human_review" if state.get("requires_human_review") else "generate_answer"

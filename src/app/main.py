@@ -17,6 +17,7 @@ from src.app.agent import build_loan_agent
 from src.app.config import get_settings
 from src.app.documents import clean_extraction, summary_markdown
 from src.app.logging_config import configure_logging
+from src.app.observability import end_trace, flush_traces, setup_tracing, start_trace, under
 from src.app.schemas import (
     CHAT_ID_PATTERN,
     MAX_UPLOAD_BYTES,
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Built once per Lambda container and reused across warm invocations.
+    setup_tracing(settings.langsmith_api_key, settings.langsmith_api_key_param, settings.langsmith_project, settings.aws_region)
     app.state.bedrock = BedrockService(settings)
     app.state.agent = build_loan_agent(app.state.bedrock)
     app.state.store = build_chat_store(settings.chats_table, settings.aws_region)
@@ -120,23 +122,31 @@ def _save_turn(request: Request, user_id: str, chat_id: str, payload: ChatReques
 @app.post("/api/v1/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest, request: Request, user_id: str = Depends(current_user)) -> ChatResponse:
     chat_id = payload.session_id or str(uuid.uuid4())
+    run = start_trace("chat", {"question": payload.message}, {"chat_id": chat_id, "streaming": False})
     try:
-        result = _run_agent(request, user_id, chat_id, payload.message, defer_answer=False)
+        with under(run):
+            result = _run_agent(request, user_id, chat_id, payload.message, defer_answer=False)
         response = ChatResponse(
             answer=result["answer"],
             session_id=chat_id,
             sources=result.get("sources", []),
             tool_used=result.get("tool_used"),
             requires_human_review=result.get("requires_human_review", False),
+            emi=result.get("emi"),
         )
     except Exception as exc:
         logger.exception("Chat request failed", extra={"chat_id": chat_id})
+        end_trace(run, error=repr(exc))
+        flush_traces()
         raise HTTPException(status_code=502, detail="LoanAssist service is temporarily unavailable.") from exc
+    end_trace(run, {"answer": response.answer}, {"tool_used": response.tool_used, "sources": len(response.sources)})
 
     saved = _save_turn(request, user_id, chat_id, payload, response.model_dump(exclude={"message_id", "created_at"}))
     if saved:
         response.message_id, response.created_at = saved["id"], saved["createdAt"]
+    flush_traces()
     return response
+
 
 
 @app.post("/api/v1/chat/stream")
@@ -149,13 +159,16 @@ def chat_stream(payload: ChatRequest, request: Request, user_id: str = Depends(c
         def line(obj: dict[str, Any]) -> str:
             return json.dumps(obj, ensure_ascii=False) + "\n"
 
+        run = start_trace("chat_stream", {"question": payload.message}, {"chat_id": chat_id, "streaming": True})
         try:
-            result = _run_agent(request, user_id, chat_id, payload.message, defer_answer=True)
+            with under(run):
+                result = _run_agent(request, user_id, chat_id, payload.message, defer_answer=True)
             meta = {
                 "session_id": chat_id,
                 "sources": [s.model_dump() if hasattr(s, "model_dump") else s for s in result.get("sources", [])],
                 "tool_used": result.get("tool_used"),
                 "requires_human_review": result.get("requires_human_review", False),
+                **({"emi": result["emi"]} if result.get("emi") else {}),
             }
             yield line({"type": "meta", **meta})
 
@@ -164,17 +177,22 @@ def chat_stream(payload: ChatRequest, request: Request, user_id: str = Depends(c
                 yield line({"type": "delta", "text": answer})
             else:
                 parts = []
-                for piece in request.app.state.bedrock.generate_stream(payload.message, result.get("context", ""), result.get("history", [])):
+                extra = {"langsmith_extra": {"parent": run}} if run is not None else {}
+                for piece in request.app.state.bedrock.generate_stream(payload.message, result.get("context", ""), result.get("history", []), **extra):
                     parts.append(piece)
                     yield line({"type": "delta", "text": piece})
                 answer = "".join(parts)
-        except Exception:
+        except Exception as exc:
             logger.exception("Streaming chat failed", extra={"chat_id": chat_id})
+            end_trace(run, error=repr(exc))
+            flush_traces()
             yield line({"type": "error", "detail": "LoanAssist service is temporarily unavailable."})
             return
+        end_trace(run, {"answer": answer}, {"tool_used": meta["tool_used"], "sources": len(meta["sources"])})
 
         saved = _save_turn(request, user_id, chat_id, payload, {"answer": answer, **meta})
         yield line({"type": "done", "message_id": saved and saved["id"], "created_at": saved and saved["createdAt"]})
+        flush_traces()  # after "done", so the user never waits for it
 
     return StreamingResponse(
         events(),

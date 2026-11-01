@@ -21,3 +21,5 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+# Eval run details (the markdown report, history and baseline are committed)
+evals/results/latest.json

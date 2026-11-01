@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     chats_table: str = ""
     # SNS topic for feedback alerts (👎 or written comments). Empty = no alerts.
     feedback_topic_arn: str = ""
+    # Optional LangSmith tracing: a key directly (local .env) or an SSM SecureString name (AWS).
+    langsmith_api_key: str = ""
+    langsmith_api_key_param: str = ""
+    langsmith_project: str = "loanassist-ai"
     allowed_origins: str = "http://localhost:3000"
     log_level: str = "INFO"
 

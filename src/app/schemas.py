@@ -20,6 +20,8 @@ class Source(BaseModel):
     title: str | None = None
     uri: str | None = None
     excerpt: str | None = None
+    pages: list[int] = []      # PDF page numbers the passages came from (from Bedrock metadata)
+    sections: list[str] = []   # headings found in the passages (e.g. "Documents required")
 
 
 class ChatResponse(BaseModel):
@@ -28,6 +30,7 @@ class ChatResponse(BaseModel):
     sources: list[Source] = []
     tool_used: str | None = None
     requires_human_review: bool = False
+    emi: dict | None = None         # EMI inputs/result for the interactive card
     message_id: str | None = None   # id of the saved assistant message (for feedback)
     created_at: int | None = None   # epoch ms
 

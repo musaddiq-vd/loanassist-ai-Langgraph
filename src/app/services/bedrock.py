@@ -1,10 +1,12 @@
 import json
 import logging
+import re
 from collections.abc import Iterator
 from typing import Any
 
 import boto3
 from botocore.config import Config
+from langsmith import traceable
 
 from src.app.config import Settings
 from src.app.schemas import Source
@@ -18,9 +20,17 @@ state those numbers directly and do not ask the customer to confirm values that 
 Ask for missing details only when the context says something is missing.
 Citations: knowledge-base passages are numbered like [1], [2]. Put the matching number in square brackets
 right after each policy fact you take from a passage, e.g. "PAN and Aadhaar are required [1]."
-Only use numbers that appear in the context. Never invent document names, section numbers, page numbers
+Only use numbers that appear in the context. Page numbers and section names may be mentioned only exactly
+as written in a passage's header. Never invent document names, section numbers, page numbers
 or sources. If the context has no numbered passages, do not add citations.
-Be concise, and never promise approval or give legal/financial advice."""
+You never approve, reject or "process" a loan and never talk as if you will: when asked to approve, say clearly
+that you cannot approve loans and that a loan officer makes the final decision; you can only give a preliminary view.
+Be concise, and never give legal/financial advice."""
+
+
+# A markdown heading up to the next bullet / quote / numbered item / heading. Bedrock often
+# returns chunks with newlines flattened ("## Documents required - PAN card ..."), so don't rely on line ends.
+_HEADING_RE = re.compile(r"(?:^|\s)#{2,6}\s+(.+?)(?=\s+(?:[-*>]|\d+\.)\s|\s+#|\n|$)")  # "##"+ = sections (skip the "#" title)
 
 
 def _document_title(uri: str | None) -> str:
@@ -37,6 +47,8 @@ def number_passages(results: list[dict[str, Any]]) -> tuple[str, list[Source]]:
     """
     order: list[str] = []
     grouped: dict[str, list[str]] = {}
+    pages: dict[str, set[int]] = {}
+    sections: dict[str, list[str]] = {}
     for item in results:
         text = (item.get("content") or {}).get("text", "").strip()
         location = item.get("location") or {}
@@ -45,13 +57,27 @@ def number_passages(results: list[dict[str, Any]]) -> tuple[str, list[Source]]:
             continue
         if uri not in grouped:
             order.append(uri)
-            grouped[uri] = []
+            grouped[uri], pages[uri], sections[uri] = [], set(), []
         grouped[uri].append(text)
+        # Bedrock adds the PDF page number to each chunk's metadata.
+        page = (item.get("metadata") or {}).get("x-amz-bedrock-kb-document-page-number")
+        if isinstance(page, (int, float)) and page >= 1:
+            pages[uri].add(int(page))
+        for heading in _HEADING_RE.findall(text):
+            heading = heading.strip("# ").strip()[:60]
+            if heading and heading not in sections[uri] and len(sections[uri]) < 4:
+                sections[uri].append(heading)
     blocks, sources = [], []
     for number, uri in enumerate(order, start=1):
         passage = "\n".join(grouped[uri])
-        blocks.append(f"[{number}] {_document_title(uri)} ({uri.rsplit('/', 1)[-1]}):\n{passage}")
-        sources.append(Source(title=_document_title(uri), uri=uri, excerpt=passage[:600]))
+        where = [uri.rsplit("/", 1)[-1]]
+        if pages[uri]:
+            where.append("page " + ", ".join(str(p) for p in sorted(pages[uri])))
+        if sections[uri]:
+            where.append("section: " + "; ".join(sections[uri]))
+        blocks.append(f"[{number}] {_document_title(uri)} ({' · '.join(where)}):\n{passage}")
+        sources.append(Source(title=_document_title(uri), uri=uri, excerpt=passage[:600],
+                              pages=sorted(pages[uri]), sections=sections[uri]))
     return "\n\n".join(blocks), sources
 
 
@@ -62,6 +88,7 @@ class BedrockService:
         self.runtime = boto3.client("bedrock-runtime", region_name=settings.aws_region, config=client_config)
         self.agent_runtime = boto3.client("bedrock-agent-runtime", region_name=settings.aws_region, config=client_config)
 
+    @traceable(name="kb_retrieve", run_type="retriever")
     def retrieve(self, query: str, loan_type: str | None = None) -> tuple[str, list[Source]]:
         """Bedrock Knowledge Base retrieval (vectors in S3 Vectors), filtered by loan type."""
         if not self.settings.bedrock_knowledge_base_id:
@@ -85,6 +112,7 @@ class BedrockService:
             response = search(None)
         return number_passages(response.get("retrievalResults", []))
 
+    @traceable(name="nova_emi_tool", run_type="llm")
     def extract_emi_params(self, question: str, history: list[str]) -> dict[str, Any] | None:
         """Ask the model to fill a strict EMI-inputs tool, so '50 lakh', '1.2 crore',
         any word order, and follow-ups like 'and for 15 years?' all work.
@@ -124,14 +152,19 @@ class BedrockService:
                 return block["toolUse"].get("input") or {}
         return None
 
+    @traceable(name="nova_router", run_type="llm")
     def select_action(self, question: str, history: list[str]) -> str:
         """The LLM selects one allowed action; fallback keeps the API resilient."""
         router_prompt = """Choose exactly one action for the customer's loan query.
 Actions: retrieve_loan_documents, calculate_emi, check_loan_eligibility,
 get_customer_details, document_question, direct_answer. Return JSON only: {"action":"..."}.
-Use documents for policy/process/documents questions; EMI for EMI calculations;
-eligibility for CIBIL/income/eligibility/"how much can I borrow"; document_question for questions about
-the salary slip or bank statement the customer uploaded in this chat; customer details only when explicitly requested."""
+- retrieve_loan_documents: any policy fact or rule (documents, limits, ages, fees, tenure, LTV, minimum income,
+  what happens below a CIBIL threshold, process, who decides), even when it mentions CIBIL or income in general.
+- calculate_emi: the customer wants an EMI computed (amount/rate/tenure), including follow-ups that change one value.
+- check_loan_eligibility: the customer asks about THEIR OWN eligibility using their own numbers ("my CIBIL is 720").
+- document_question: about the salary slip / bank statement uploaded in this chat.
+- get_customer_details: only when explicitly asked for their customer profile.
+- direct_answer: greetings, thanks, or anything not about loans."""
         response = self.runtime.converse(
             modelId=self.settings.bedrock_model_id,
             system=[{"text": router_prompt}],
@@ -170,10 +203,12 @@ the salary slip or bank statement the customer uploaded in this chat; customer d
                 request["guardrailConfig"]["streamProcessingMode"] = "sync"
         return request
 
+    @traceable(name="nova_answer", run_type="llm")
     def generate(self, question: str, context: str, history: list[str] | None = None) -> str:
         response = self.runtime.converse(**self._answer_request(question, context, history, streaming=False))
         return response["output"]["message"]["content"][0]["text"]
 
+    @traceable(name="nova_answer_stream", run_type="llm")
     def generate_stream(self, question: str, context: str, history: list[str] | None = None) -> Iterator[str]:
         """Yield the answer text in small pieces as Nova Lite writes it."""
         response = self.runtime.converse_stream(**self._answer_request(question, context, history, streaming=True))
@@ -182,6 +217,9 @@ the salary slip or bank statement the customer uploaded in this chat; customer d
             if delta.get("text"):
                 yield delta["text"]
 
+    # The file itself is never sent to LangSmith, only its format and size.
+    @traceable(name="nova_read_document", run_type="llm",
+               process_inputs=lambda i: {"file_format": i.get("file_format"), "size_bytes": len(i.get("data") or b"")})
     def extract_income_document(self, data: bytes, file_format: str) -> dict[str, Any] | None:
         """Read a salary slip / bank statement (PDF or image) and return the income facts via a strict tool."""
         tool = {

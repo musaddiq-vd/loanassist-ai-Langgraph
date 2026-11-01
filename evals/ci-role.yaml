@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  One-time setup: an IAM role GitHub Actions can assume (OIDC, no stored keys) to run
+  the LoanAssist evals against Bedrock. Read-only on the stack; can only call the models,
+  the knowledge base and the guardrail.
+
+  aws cloudformation deploy --template-file evals/ci-role.yaml --stack-name loanassist-ci-evals-role
+    --capabilities CAPABILITY_NAMED_IAM --parameter-overrides GitHubRepo=<owner>/<repo>
+
+Parameters:
+  GitHubRepo:
+    Type: String
+    Description: owner/repo allowed to assume the role, e.g. musaddiq-vd/loanassist-ai-Langgraph
+  AppStackName:
+    Type: String
+    Default: loanassist-ai
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: Set to false if this AWS account already has the GitHub OIDC provider.
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidc:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  EvalsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: loanassist-ci-evals
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:*
+      Policies:
+        - PolicyName: run-evals
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppStackName}/*
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/*
+              - Effect: Allow
+                Action: [bedrock:Retrieve, bedrock:ApplyGuardrail, bedrock:ListGuardrails]
+                Resource: '*'
+
+Outputs:
+  RoleArn:
+    Description: Put this in the GitHub repository variable AWS_EVAL_ROLE_ARN
+    Value: !GetAtt EvalsRole.Arn

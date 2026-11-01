@@ -170,3 +170,39 @@ def test_feedback_alert_text_is_plain_ascii_subject():
                                          "question": "q", "answer": "a", "chatId": "c", "messageId": "m", "userId": "u"})
     assert subject.isascii() and len(subject) < 100 and "wrong rate" in body
     assert should_alert("down", None) and should_alert(None, "note") and not should_alert("up", "  ")
+
+
+def test_number_passages_adds_pages_and_sections():
+    from src.app.services.bedrock import number_passages
+    results = [
+        {"content": {"text": "## Documents required\n- PAN card"}, "location": {"s3Location": {"uri": "s3://b/home-loan.pdf"}},
+         "metadata": {"x-amz-bedrock-kb-document-page-number": 3.0}},
+        {"content": {"text": "## Key terms\n- Tenure up to 30 years"}, "location": {"s3Location": {"uri": "s3://b/home-loan.pdf"}},
+         "metadata": {"x-amz-bedrock-kb-document-page-number": 1.0}},
+    ]
+    context, sources = number_passages(results)
+    assert sources[0].pages == [1, 3] and sources[0].sections == ["Documents required", "Key terms"]
+    assert context.startswith("[1] Home loan (home-loan.pdf · page 1, 3 · section: Documents required; Key terms):")
+
+
+def test_threshold_numbers_are_not_the_users_cibil():
+    assert extract_cibil_score("What happens if my CIBIL score is below 650?") is None
+    assert extract_cibil_score("Is a minimum credit score of 700 needed?") is None
+    assert extract_cibil_score("My CIBIL score is 640") == 640
+
+
+def test_strip_citations_and_policy_routes():
+    from src.app.loan_math import strip_citations
+    assert strip_citations("PAN is needed [1]. Aadhaar too [1, 2].") == "PAN is needed. Aadhaar too."
+    for q in ("What is the loan-to-value ratio for home loans?", "What is the maximum personal loan amount?",
+              "What share of my income can go towards EMIs?", "Who makes the final loan decision?",
+              "What is the maximum age at loan maturity for self-employed applicants?"):
+        assert fast_route(q) == "retrieve_loan_documents", q
+
+
+def test_sections_from_flattened_markdown_chunks():
+    from src.app.services.bedrock import number_passages
+    flat = ("# Home Loan Policy (sample) > Sample content. ## Documents required - Identity proof: PAN card "
+            "## Key terms - Tenure: up to 30 years - Processing fee: up to 0.5% of the loan amount")
+    _, sources = number_passages([{"content": {"text": flat}, "location": {"s3Location": {"uri": "s3://b/home-loan.md"}}}])
+    assert sources[0].sections == ["Documents required", "Key terms"]

@@ -320,7 +320,14 @@ Resources:
           BEDROCK_GUARDRAIL_VERSION: !GetAtt GuardrailVersion.Version
           CHATS_TABLE: !Ref ChatsTable
           FEEDBACK_TOPIC_ARN: !Ref FeedbackAlertsTopic
+          # Optional LangSmith tracing: create this SecureString to turn it on (see README).
+          LANGSMITH_API_KEY_PARAM: /loanassist/langsmith-api-key
+          LANGSMITH_PROJECT: !Ref AWS::StackName
       Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameter
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loanassist/langsmith-api-key
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatsTable
         - SNSPublishMessagePolicy:
