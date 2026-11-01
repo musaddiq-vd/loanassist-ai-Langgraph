@@ -1,0 +1,164 @@
+<!doctype html>
+<!-- Source for docs/architecture.png. Re-render with headless Chrome at 1680x900, scale 2. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>LoanAssist AI architecture</title>
+<style>
+  :root {
+    --bg: #faf9f5; --card: #ffffff; --text: #1f1e1b; --muted: #73716a; --line: #b9b4a7;
+    --accent: #c2603a;
+    --edge: #7b61d1; --auth: #d6455d; --compute: #e07b28; --ai: #12968a; --data: #2f6fd6; --ops: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 1680px; height: 900px; background: var(--bg); font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); position: relative; overflow: hidden; }
+  .title { position: absolute; left: 40px; top: 28px; display: flex; align-items: center; gap: 14px; }
+  .logo { width: 44px; height: 44px; border-radius: 12px; background: var(--accent); display: grid; place-items: center; color: #fff; }
+  .title h1 { margin: 0; font: 600 30px/1.1 "Palatino Linotype", Georgia, serif; letter-spacing: -0.01em; }
+  .title p { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+  .chips { position: absolute; right: 40px; top: 36px; display: flex; gap: 10px; }
+  .chip { padding: 7px 14px; border-radius: 999px; background: var(--card); border: 1px solid #e5e2d9; font-size: 14px; font-weight: 600; }
+  .chip b { color: var(--accent); }
+
+  .group { position: absolute; border-radius: 22px; border: 2px dashed; background: rgba(255,255,255,0.45); }
+  .group > .label { position: absolute; top: -14px; left: 18px; padding: 3px 12px; border-radius: 999px; color: #fff; font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+
+  .node { position: absolute; display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--card); border-radius: 14px; box-shadow: 0 2px 10px rgba(30,25,15,0.07), 0 0 0 1px #e8e4da; z-index: 2; }
+  .node .ic { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; color: #fff; font-size: 20px; font-weight: 700; }
+  .node h3 { margin: 0; font-size: 16px; line-height: 1.2; }
+  .node p { margin: 2px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.3; }
+  .node.small { padding: 8px 12px; border-radius: 11px; gap: 9px; }
+  .node.small .ic { width: 28px; height: 28px; border-radius: 8px; font-size: 14px; }
+  .node.small h3 { font-size: 14px; }
+  .node.small p { font-size: 11.5px; }
+  .node.warn { box-shadow: 0 0 0 1.5px #e7a25b, 0 2px 10px rgba(30,25,15,0.07); background: #fdf6ec; }
+
+  .edge .ic { background: var(--edge); } .auth .ic { background: var(--auth); } .compute .ic { background: var(--compute); }
+  .ai .ic { background: var(--ai); } .data .ic { background: var(--data); } .ops .ic { background: var(--ops); } .user .ic { background: var(--text); }
+
+  svg.wires { position: absolute; inset: 0; z-index: 1; overflow: visible; }
+  .lbl { position: absolute; z-index: 3; transform: translate(-50%, -50%); padding: 2px 8px; border-radius: 7px; background: var(--bg); font-size: 12px; font-weight: 600; color: #57534a; white-space: nowrap; }
+  .num { position: absolute; z-index: 4; transform: translate(-50%, -50%); width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 700; box-shadow: 0 0 0 3px var(--bg); }
+
+  .legend { position: absolute; left: 40px; top: 818px; right: 40px; display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; color: var(--muted); }
+  .legend ol { margin: 0; padding: 0; list-style: none; display: flex; gap: 22px; white-space: nowrap; }
+  .legend li { display: flex; align-items: center; gap: 6px; }
+  .legend li span { width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="title">
+    <div class="logo"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2 3 7v2h18V7l-9-5Zm-7 9v7h3v-7H5Zm5 0v7h4v-7h-4Zm6 0v7h3v-7h-3ZM3 20v2h18v-2H3Z"/></svg></div>
+    <div><h1>LoanAssist AI — Architecture</h1><p>Serverless agentic RAG on AWS · one command to deploy · nothing runs while nobody chats</p></div>
+  </div>
+  <div class="chips">
+    <div class="chip">💸 <b>≈ $6.50</b> / 10K chats</div>
+    <div class="chip">😴 <b>≈ $0</b> when idle</div>
+    <div class="chip">🚀 <b>.\deploy.ps1</b></div>
+  </div>
+
+  <!-- Groups -->
+  <div class="group" style="left:250px;top:150px;width:470px;height:640px;border-color:#c9bdf0"><div class="label" style="background:var(--edge)">Edge &amp; Sign-in</div></div>
+  <div class="group" style="left:770px;top:150px;width:400px;height:640px;border-color:#f2c6a0"><div class="label" style="background:var(--compute)">AWS Lambda · FastAPI + LangGraph</div></div>
+  <div class="group" style="left:1220px;top:150px;width:420px;height:260px;border-color:#a8dcd6"><div class="label" style="background:var(--ai)">Amazon Bedrock</div></div>
+  <div class="group" style="left:1220px;top:450px;width:420px;height:340px;border-color:#b7cdf3"><div class="label" style="background:var(--data)">Data</div></div>
+
+  <!-- User -->
+  <div class="node user" id="user" style="left:40px;top:430px;width:170px"><div class="ic">👤</div><div><h3>Customer</h3><p>Browser or phone</p></div></div>
+
+  <!-- Edge & auth -->
+  <div class="node auth" id="cognito" style="left:275px;top:195px;width:220px"><div class="ic">🔐</div><div><h3>Cognito</h3><p>Managed login · PKCE<br/>10K users/month free</p></div></div>
+  <div class="node edge" id="cf" style="left:275px;top:430px;width:200px"><div class="ic">🌐</div><div><h3>CloudFront</h3><p>HTTPS · one domain</p></div></div>
+  <div class="node auth" id="apigw" style="left:520px;top:430px;width:180px"><div class="ic">🛂</div><div><h3>API Gateway</h3><p>Cognito authorizer</p></div></div>
+  <div class="node data" id="s3web" style="left:520px;top:650px;width:180px"><div class="ic">🗂️</div><div><h3>S3</h3><p>Chat UI (private, OAC)</p></div></div>
+
+  <!-- Lambda: agent flow -->
+  <div class="node small compute" id="fast" style="left:795px;top:190px;width:350px"><div class="ic">⚡</div><div><h3>Fast route</h3><p>EMI or CIBIL number? skip the LLM router</p></div></div>
+  <div class="node small compute" id="router" style="left:795px;top:265px;width:350px"><div class="ic">🧭</div><div><h3>LLM router</h3><p>Picks one tool for everything else</p></div></div>
+  <div class="node small compute" id="tkb" style="left:795px;top:350px;width:170px"><div class="ic">📚</div><div><h3>KB search</h3><p>by loan type</p></div></div>
+  <div class="node small compute" id="temi" style="left:975px;top:350px;width:170px"><div class="ic">🧮</div><div><h3>EMI calculator</h3><p>tool-calling</p></div></div>
+  <div class="node small compute" id="tel" style="left:795px;top:425px;width:170px"><div class="ic">✅</div><div><h3>Eligibility</h3><p>CIBIL check</p></div></div>
+  <div class="node small compute" id="tcust" style="left:975px;top:425px;width:170px"><div class="ic">🪪</div><div><h3>CRM lookup</h3><p>placeholder</p></div></div>
+  <div class="node small compute" id="gen" style="left:795px;top:520px;width:350px"><div class="ic">✍️</div><div><h3>Generate answer</h3><p>Nova Lite + guardrail · saved to history</p></div></div>
+  <div class="node small warn" id="human" style="left:795px;top:610px;width:350px"><div class="ic" style="background:#d98a2b">🧑‍⚖️</div><div><h3>Human review</h3><p>CIBIL &lt; 650 → loan officer · never auto-approve/reject</p></div></div>
+  <div class="node small ops" id="tests" style="left:795px;top:705px;width:350px"><div class="ic">🧪</div><div><h3>43 unit tests</h3><p>loan maths · CIBIL · routing</p></div></div>
+
+  <!-- Bedrock -->
+  <div class="node ai" id="nova" style="left:1240px;top:190px;width:185px"><div class="ic">🤖</div><div><h3>Nova Lite</h3><p>router · EMI tool · answer</p></div></div>
+  <div class="node ai" id="guard" style="left:1440px;top:190px;width:180px"><div class="ic">🛡️</div><div><h3>Guardrail</h3><p>question + answer only</p></div></div>
+  <div class="node ai" id="titan" style="left:1240px;top:300px;width:380px"><div class="ic">🔢</div><div><h3>Titan Embeddings V2</h3><p>1024-dim vectors for documents and questions</p></div></div>
+
+  <!-- Data -->
+  <div class="node data" id="ddb" style="left:1240px;top:490px;width:380px"><div class="ic">💬</div><div><h3>DynamoDB</h3><p>Chat history per user · synced on every device</p></div></div>
+  <div class="node data" id="kb" style="left:1240px;top:585px;width:205px"><div class="ic">🧠</div><div><h3>Knowledge Base</h3><p>loan_type filter</p></div></div>
+  <div class="node data" id="vec" style="left:1460px;top:585px;width:160px"><div class="ic">📐</div><div><h3>S3 Vectors</h3><p>pay-per-use index</p></div></div>
+  <div class="node data" id="docs" style="left:1240px;top:705px;width:380px"><div class="ic">📄</div><div><h3>S3 · loan documents</h3><p>home / personal / general + metadata.json tags</p></div></div>
+
+  <svg class="wires" id="wires"><defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#8a8578"/></marker>
+    <marker id="arrowA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#c2603a"/></marker>
+  </defs></svg>
+
+  <div class="legend">
+    <ol>
+      <li><span>1</span>Sign in, open the app</li>
+      <li><span>2</span>UI from S3</li>
+      <li><span>3</span>/api/* with ID token</li>
+      <li><span>4</span>Token checked, Lambda runs the agent</li>
+      <li><span>5</span>Load + save chat history</li>
+      <li><span>6</span>Filtered document search</li>
+      <li><span>7</span>Nova Lite answers through the guardrail</li>
+    </ol>
+    <div>🧱 Infrastructure as code with AWS SAM · 🔒 least-privilege IAM · 📈 logs in CloudWatch · 🔁 safe to re-run <b>.\deploy.ps1</b></div>
+  </div>
+
+<script>
+  const svg = document.getElementById("wires");
+  const box = (id) => { const r = document.getElementById(id).getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, cx: (r.left + r.right) / 2, cy: (r.top + r.bottom) / 2 }; };
+  const groupBox = { l: 770, r: 1170, t: 150, b: 790 };
+  function path(points, { dashed = false, accent = false } = {}) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", "M" + points.map((q) => q.join(" ")).join(" L"));
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", accent ? "#c2603a" : "#a7a294");
+    p.setAttribute("stroke-width", accent ? "2.6" : "2");
+    p.setAttribute("stroke-linejoin", "round");
+    if (dashed) p.setAttribute("stroke-dasharray", "6 6");
+    p.setAttribute("marker-end", accent ? "url(#arrowA)" : "url(#arrow)");
+    svg.append(p);
+  }
+  function label(x, y, text) { const d = document.createElement("div"); d.className = "lbl"; d.style.left = x + "px"; d.style.top = y + "px"; d.textContent = text; document.body.append(d); }
+  function num(x, y, n) { const d = document.createElement("div"); d.className = "num"; d.style.left = x + "px"; d.style.top = y + "px"; d.textContent = n; document.body.append(d); }
+
+  const u = box("user"), cg = box("cognito"), cf = box("cf"), ag = box("apigw"), s3 = box("s3web");
+  // 1 user -> cloudfront, user -> cognito
+  path([[u.r, cf.cy], [cf.l - 2, cf.cy]], { accent: true }); num((u.r + cf.l) / 2, cf.cy - 1, 1);
+  path([[u.cx, u.t], [u.cx, cg.cy], [cg.l - 2, cg.cy]], { dashed: true }); label(u.cx, (u.t + cg.cy) / 2, "sign in");
+  // 2 cloudfront -> s3 (/*)
+  path([[cf.cx, cf.b], [cf.cx, s3.cy], [s3.l - 2, s3.cy]], { accent: true }); num(cf.cx, (cf.b + s3.cy) / 2, 2); label(cf.cx + 70, s3.cy - 16, "/*  static UI");
+  // 3 cloudfront -> api gateway (/api/*)
+  path([[cf.r, ag.cy], [ag.l - 2, ag.cy]], { accent: true }); num((cf.r + ag.l) / 2, ag.cy - 24, 3); label((cf.r + ag.l) / 2, ag.cy + 20, "/api/*");
+  // cognito -> api gateway (verifies token)
+  path([[cg.r, cg.cy], [ag.cx, cg.cy], [ag.cx, ag.t - 2]], { dashed: true }); label(ag.cx, (cg.cy + ag.t) / 2, "verifies ID token");
+  // 4 api gateway -> lambda
+  path([[ag.r, ag.cy], [groupBox.l - 2, ag.cy]], { accent: true }); num((ag.r + groupBox.l) / 2, ag.cy - 1, 4);
+
+  // agent internal flow
+  const f = box("fast"), r = box("router"), kb = box("tkb"), em = box("temi"), el = box("tel"), cu = box("tcust"), g = box("gen"), h = box("human");
+  path([[f.cx, f.b], [f.cx, r.t - 2]]); label(f.cx + 30, (f.b + r.t) / 2, "else");
+  path([[r.cx, r.b], [r.cx, kb.t - 2]]);
+  path([[kb.cx, el.b + 4], [kb.cx, g.t - 2]]);
+  path([[em.cx, cu.b + 4], [em.cx, g.t - 2]]);
+  path([[f.r, f.cy], [f.r + 14, f.cy], [f.r + 14, em.cy], [em.r + 2, em.cy]], { dashed: true });
+  path([[h.l, h.cy], [h.l - 12, h.cy], [h.l - 12, el.cy], [el.l - 2, el.cy]].reverse(), { dashed: true }); label(h.l - 12, (el.cy + h.cy) / 2 + 30, "< 650");
+
+  // lambda -> right side
+  const nv = box("nova"), gd = box("guard"), ti = box("titan"), dd = box("ddb"), k = box("kb"), v = box("vec"), dc = box("docs");
+  path([[groupBox.r, nv.cy], [nv.l - 2, nv.cy]], { accent: true }); num((groupBox.r + nv.l) / 2, nv.cy - 1, 7);
+  path([[nv.r, nv.cy], [gd.l - 2, gd.cy]]);
+  path([[groupBox.r, dd.cy], [dd.l - 2, dd.cy]], { accent: true }); num((groupBox.r + dd.l) / 2, dd.cy - 1, 5);
+  path([[groupBox.r, k.cy], [k.l - 2, k.cy]], { accent: true }); num((groupBox.r + k.l) / 2, k.cy - 1, 6);
+  path([[k.r, k.cy], [v.l - 2, k.cy]]);
+  path([[k.cx, dc.t], [k.cx, k.b + 2]], { dashed: true }); label(k.cx + 52, (dc.t + k.b) / 2, "ingestion");</script>
+</body>
+</html>

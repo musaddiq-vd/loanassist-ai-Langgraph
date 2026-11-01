@@ -64,22 +64,21 @@
 
 ## 🏗 Architecture
 
-```mermaid
-flowchart LR
-    U([👤 User]) -->|sign in| COG[Cognito<br/>managed login]
-    U --> CF[CloudFront]
-    CF -->|"/*"| S3F[(S3<br/>Frontend)]
-    CF -->|"/api/*"| APIGW[API Gateway<br/>Cognito authorizer]
-    APIGW --> L[Lambda<br/>FastAPI + LangGraph]
+<img src="docs/architecture.png" alt="LoanAssist AI architecture: CloudFront and Cognito in front of API Gateway, a Lambda running the LangGraph agent, Bedrock Nova Lite with a guardrail, DynamoDB chat history and a Knowledge Base on S3 Vectors" width="100%"/>
 
-    L --> DDB[(DynamoDB<br/>Chat history)]
-    L --> BR[Bedrock<br/>Nova Lite]
-    BR --- GR[Guardrail]
-    L --> KB[Knowledge Base]
-    KB --> VEC[(S3 Vectors)]
-    DOCS[(S3<br/>Loan docs)] -. ingestion .-> KB
-    L --> CW[CloudWatch Logs]
-```
+<sub>Diagram source: [`docs/architecture.html`](docs/architecture.html), rendered with headless Chrome.</sub>
+
+### A question's journey
+
+| # | Step | What happens |
+|:-:|---|---|
+| 1 | 🔐 **Sign in** | The customer signs in on Cognito's hosted page and opens the CloudFront URL. |
+| 2 | 🌐 **Load the UI** | CloudFront serves the chat UI from a private S3 bucket. |
+| 3 | 📨 **Ask** | The browser calls `/api/v1/chat` on the same domain with its ID token. |
+| 4 | 🛂 **Check + run** | API Gateway's Cognito authorizer validates the token; Lambda runs the LangGraph agent. |
+| 5 | 💬 **Remember** | The last 6 messages of the chat are loaded from DynamoDB; the new turn is saved after the answer. |
+| 6 | 📚 **Look it up** | For policy questions, the Knowledge Base searches S3 Vectors, filtered by loan type. |
+| 7 | 🤖 **Answer safely** | Nova Lite writes the answer; the guardrail checks the question and the answer. |
 
 **Why one domain?** CloudFront serves the UI *and* forwards `/api/*` to API Gateway. The browser only ever talks to one origin, so there is **no CORS setup and no API URL to configure**.
 
@@ -89,22 +88,33 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Q[Question] --> FR{Fast route?<br/>EMI / CIBIL number}
+    Q([💬 Question]) --> FR{⚡ Fast route<br/>EMI or CIBIL number?}
     FR -->|EMI| E
     FR -->|CIBIL| EL
-    FR -->|no| R{LLM Router}
-    R -->|policy / documents| D[Retrieve from KB]
-    R -->|EMI| E[Calculate EMI]
-    R -->|eligibility| EL{CIBIL ≥ 650?}
-    R -->|customer details| C[Customer lookup<br/><i>placeholder</i>]
-    R -->|other| X[Direct answer]
+    FR -->|no| R{🧭 LLM router}
+    R -->|policy / documents| D[📚 KB search<br/>filtered by loan type]
+    R -->|EMI| E[🧮 EMI calculator<br/>Nova tool-calling + parser]
+    R -->|eligibility| EL{✅ CIBIL ≥ 650?}
+    R -->|customer details| C[🪪 CRM lookup<br/><i>placeholder</i>]
+    R -->|other| X[💡 Direct answer]
 
-    D --> G[Generate answer<br/>Nova Lite + Guardrail]
+    D --> G([✍️ Generate answer<br/>Nova Lite + Guardrail])
     E --> G
     C --> G
     X --> G
     EL -->|yes| G
-    EL -->|no| H[🧑‍⚖️ Human review]
+    EL -->|no| H([🧑‍⚖️ Human review<br/>never auto-approve/reject])
+
+    classDef entry fill:#1f1e1b,stroke:#1f1e1b,color:#fff
+    classDef route fill:#fdf0e6,stroke:#e07b28,color:#1f1e1b
+    classDef tool fill:#fff,stroke:#e07b28,color:#1f1e1b
+    classDef answer fill:#c2603a,stroke:#c2603a,color:#fff
+    classDef review fill:#fdf3e7,stroke:#d98a2b,color:#8a4b12
+    class Q entry
+    class FR,R,EL route
+    class D,E,C,X tool
+    class G answer
+    class H review
 ```
 
 ### Tech stack
