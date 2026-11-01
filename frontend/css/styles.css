@@ -455,11 +455,11 @@ textarea::placeholder { color: var(--muted); }
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 20;
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18);
     transform: translateX(-100%);
   }
   .app.sidebar-collapsed .sidebar { margin-left: 0; }
-  .app.sidebar-open .sidebar { transform: none; }
+  /* Shadow only while open, so no grey strip leaks in at the left edge. */
+  .app.sidebar-open .sidebar { transform: none; box-shadow: 4px 0 24px rgba(0, 0, 0, 0.18); }
   .app.sidebar-open .backdrop {
     display: block;
     position: fixed;

@@ -13,12 +13,33 @@
 ![Cognito](https://img.shields.io/badge/Auth-Cognito-DD344C?logo=amazonaws&logoColor=white)
 ![DynamoDB](https://img.shields.io/badge/History-DynamoDB-4053D6?logo=amazondynamodb&logoColor=white)
 
-[Features](#-features) · [Architecture](#-architecture) · [Deploy](#-deploy-in-one-command) · [Cost](#-cost-breakdown) · [API](#-api) · [Run locally](#-run-locally)
+[Screenshots](#-screenshots) · [Features](#-features) · [Architecture](#-architecture) · [Deploy](#-deploy-in-one-command) · [Cost](#-cost-breakdown) · [API](#-api) · [Run locally](#-run-locally)
+
+<br/>
+
+<img src="docs/screenshots/chat-light.png" alt="LoanAssist chat with sidebar history, a markdown answer and a source chip" width="100%"/>
 
 </div>
 
 > [!IMPORTANT]
 > LoanAssist is **informational only**. It never approves or rejects a loan, and it is not legal or financial advice. A CIBIL score below **650** is always handed to a human loan officer.
+
+---
+
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/welcome.png" alt="Welcome screen with suggestion prompts"/><br/><sub><b>Welcome</b> — suggestion prompts and chat history grouped by day</sub></td>
+    <td width="50%"><img src="docs/screenshots/chat-dark.png" alt="EMI follow-up conversation in dark mode"/><br/><sub><b>Dark mode</b> — EMI calculator with a follow-up that keeps context</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/login.png" alt="Sign-in screen"/><br/><sub><b>Sign in</b> — Cognito accounts, history synced across devices</sub></td>
+    <td width="50%"><img src="docs/screenshots/mobile.png" alt="Mobile views: human review badge and history sidebar"/><br/><sub><b>Mobile</b> — human-review badge (CIBIL &lt; 650) and slide-out history</sub></td>
+  </tr>
+</table>
+
+<sub>Screenshots use sample chats; answers are the same ones the deployed app returned for these questions.</sub>
 
 ---
 
