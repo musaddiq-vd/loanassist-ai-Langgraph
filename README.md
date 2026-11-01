@@ -137,11 +137,12 @@ flowchart TD
 
 | Layer | Technology |
 |---|---|
-| Frontend | HTML, CSS, vanilla JavaScript |
+| Frontend | HTML, CSS, vanilla JavaScript, pdf.js (source preview) |
 | Backend | Python 3.11, FastAPI on uvicorn via **AWS Lambda Web Adapter** (response streaming), Pydantic Settings |
 | AI | LangGraph, Amazon Nova Lite, Titan Text Embeddings V2, Bedrock Guardrails |
 | Retrieval | Bedrock Knowledge Base + Amazon S3 Vectors |
 | Auth & data | Amazon Cognito (managed login, PKCE), Amazon DynamoDB (on-demand) |
+| Background jobs | Amazon SQS + dead-letter queue, worker Lambda, pypdf, CloudWatch alarm → SNS |
 | Infrastructure | AWS SAM, Lambda, API Gateway, S3, CloudFront (OAC), IAM, CloudWatch |
 
 ### Chat history data model
@@ -152,7 +153,7 @@ One DynamoDB table, partitioned by user:
 |---|---|---|
 | `USER#<cognito sub>` | `CHAT#<chatId>` | title, createdAt, updatedAt |
 | `USER#<cognito sub>` | `MSG#<chatId>#<epoch ms>#<0\|1>` | role, text, answer metadata (sources, tool, review flag), feedback |
-| `USER#<cognito sub>` | `DOC#<chatId>#<epoch ms>` | facts extracted from an uploaded salary slip / bank statement |
+| `USER#<cognito sub>` | `DOC#<chatId>#<docId>` | uploaded document: type, extracted facts, job `status` (uploading → queued → processing → done / failed), attempts, error |
 | `FEEDBACK` | `<epoch ms>#<messageId>` | team review log: rating, comment, question, answer, user, chat |
 
 Every message is its own item, so long chats never hit DynamoDB's 400 KB item limit, and the agent reads only the last 6 messages for context. A message's id is `<epoch ms>-<0|1>`, which is also its timestamp.
@@ -406,6 +407,7 @@ Assumptions per chat message: Nova Lite ≈ 1,700 input + 320 output tokens (cle
 | DynamoDB | <$0.01 | $0.04 | $0.35 |
 | Cognito | $0 *(free tier)* | $0 *(free tier)* | $0 *(free tier)* |
 | CloudWatch Logs | $0 *(free tier)* | $0 *(free tier)* | ~$1.00 |
+| SQS + DLQ alarm (big uploads) | $0 *(free tier)* | $0 *(free tier)* | $0 *(free tier)* |
 | **Total (approx.)** | **≈ $0.70** | **≈ $6.50** | **≈ $66** |
 
 > [!NOTE]
@@ -530,6 +532,9 @@ CIBIL below 650:
 | Calculate EMI for a 5000000 loan at 8.5% for 20 years | `calculate_emi`, ≈ ₹43,391 / month |
 | My CIBIL score is 720. Am I eligible? | `check_loan_eligibility`, no review |
 | My CIBIL score is 620. Am I eligible? | `check_loan_eligibility`, **human review** badge |
+| Click a `[1]` citation | Side panel opens the PDF page with the passage highlighted |
+| Click a follow-up chip / ⏹ while streaming / ↻ / ✏️ on a question | Asks it / stops with a *Stopped* tag / new answer / edited question re-asked |
+| Upload a PDF over 3 MB, open **Checklist** | Status goes queued → processing → done; a scanned PDF shows *failed* with a reason |
 
 ---
 
@@ -635,6 +640,19 @@ Typical causes: Bedrock `AccessDenied` (model changed without redeploying), a mi
 </details>
 
 <details>
+<summary><b>A big upload stays failed / DLQ alarm email</b></summary>
+
+The checklist shows the reason (scanned PDF, image over 3.7 MB, damaged file). Worker logs and the dead-letter queue:
+
+```powershell
+sam logs --stack-name loanassist-ai --name DocumentWorkerFunction --tail
+```
+
+Fix the cause, then press **Retry** in the checklist (within 7 days, before the file is auto-deleted) or upload again. See *Big documents* above to read the DLQ.
+
+</details>
+
+<details>
 <summary><b>Sign-in problems</b></summary>
 
 - **"Sign-in expired. Please try again."**: the sign-in was started in another tab or took too long. Click **Sign in** again.
@@ -661,6 +679,8 @@ Run `.\deploy.ps1` again (it invalidates the cache), then hard-refresh with `Ctr
 - ✅ HTTPS everywhere via CloudFront
 - ✅ Bedrock Guardrails on every generated answer
 - ✅ Model output is HTML-escaped before rendering in the UI
+- ✅ Big uploads go straight to a private bucket through a 15-minute presigned URL scoped to the user's own key; the file is deleted after processing (and by a 7-day lifecycle rule)
+- ✅ The source preview only serves files from the docs bucket
 - ✅ `.env`, credentials, `venv/` and `.aws-sam/` are git-ignored; `samconfig.toml` holds no secrets
 
 ## 🗺 Roadmap
@@ -673,5 +693,7 @@ Run `.\deploy.ps1` again (it invalidates the cache), then hard-refresh with `Ctr
 - [x] LLM tool-calling for EMI inputs, stricter CIBIL detection, loan-type filter
 - [x] Streaming, salary-slip check, feedback + alerts, interactive EMI card
 - [x] 50-case eval suite in CI, LangSmith tracing
-- [ ] CloudWatch alarms, dashboard and log retention
+- [x] Source preview, follow-ups, stop / regenerate / edit, PDF export
+- [x] Document checklist with a background pipeline (S3 → SQS → worker → DLQ + alarm)
+- [ ] More CloudWatch alarms (Lambda errors, latency), a dashboard and log retention
 - [ ] Custom domain (ACM + Route 53) and optional AWS WAF
