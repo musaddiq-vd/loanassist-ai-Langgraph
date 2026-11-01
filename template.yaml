@@ -323,15 +323,25 @@ Resources:
           # Optional LangSmith tracing: create this SecureString to turn it on (see README).
           LANGSMITH_API_KEY_PARAM: /loanassist/langsmith-api-key
           LANGSMITH_PROJECT: !Ref AWS::StackName
+          UPLOADS_BUCKET: !Ref UploadsBucket
+          DOCUMENT_QUEUE_URL: !Ref DocumentQueue
+          DOCS_BUCKET: !Ref DocsBucket
       Policies:
         - Statement:
             - Effect: Allow
               Action: ssm:GetParameter
               Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/loanassist/langsmith-api-key
+            - Effect: Allow
+              Action: s3:PutObject   # presigned upload URLs are signed with this role
+              Resource: !Sub ${UploadsBucket.Arn}/uploads/*
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatsTable
         - SNSPublishMessagePolicy:
             TopicName: !GetAtt FeedbackAlertsTopic.TopicName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt DocumentQueue.QueueName
+        - S3ReadPolicy:   # policy PDFs for the source preview panel
+            BucketName: !Ref DocsBucket
         - Statement:
             - Effect: Allow
               # Converse = InvokeModel, ConverseStream = InvokeModelWithResponseStream.
@@ -345,6 +355,99 @@ Resources:
             - Effect: Allow
               Action: bedrock:ApplyGuardrail
               Resource: !GetAtt Guardrail.GuardrailArn
+
+  # ---------------------------------------------------------------------------
+  # Big documents: browser -> S3 (presigned) -> SQS -> worker Lambda; failures -> DLQ + alarm
+  # ---------------------------------------------------------------------------
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: delete-uploads   # processed files are deleted at once; this catches failed/abandoned ones
+            Status: Enabled
+            ExpirationInDays: 7
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT]
+            AllowedOrigins: ['*']   # the presigned URL itself is the permission
+            AllowedHeaders: ['*']
+            MaxAge: 3000
+
+  DocumentDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # 14 days to inspect / redrive
+      SqsManagedSseEnabled: true
+
+  DocumentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 360   # 6 x worker timeout, as AWS recommends for Lambda event sources
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DocumentDLQ.Arn
+        maxReceiveCount: 3
+
+  DocumentDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A LoanAssist document could not be processed and is in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DocumentDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FeedbackAlertsTopic
+
+  DocumentWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: src.worker.handler
+      Runtime: python3.11
+      MemorySize: 1024
+      Timeout: 60
+      Tracing: Active
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          CHATS_TABLE: !Ref ChatsTable
+          DOCUMENT_DLQ_URL: !Ref DocumentDLQ
+          MAX_RECEIVES: '3'
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt DocumentQueue.Arn
+            BatchSize: 1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatsTable
+        - S3CrudPolicy:
+            BucketName: !Ref UploadsBucket
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt DocumentDLQ.QueueName
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
 
   # ---------------------------------------------------------------------------
   # Frontend: private S3 bucket + CloudFront (also proxies /api/* to the API)
@@ -439,6 +542,13 @@ Outputs:
     Value: !GetAtt KnowledgeBaseDataSource.DataSourceId
   ChatsTable:
     Value: !Ref ChatsTable
+  UploadsBucket:
+    Value: !Ref UploadsBucket
+  DocumentQueueUrl:
+    Value: !Ref DocumentQueue
+  DocumentDLQUrl:
+    Description: Documents that failed 3 times (or were unreadable) land here
+    Value: !Ref DocumentDLQ
   UserPoolId:
     Value: !Ref UserPool
   UserPoolClientId:

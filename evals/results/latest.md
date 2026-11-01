@@ -1,6 +1,6 @@
-# LoanAssist eval — 2026-11-01 12:29 UTC (commit 26f6151)
+# LoanAssist eval — 2026-11-01 13:16 UTC (commit 9e506f2)
 
-**50/50 passed (100%)** · grounded 5/5 · helpful 5/5 · latency p50 1.87s, p95 3.67s
+**50/50 passed (100%)** · grounded 5/5 · helpful 5/5 · latency p50 1.88s, p95 3.59s
 
 | Category | Passed |
 |---|---:|

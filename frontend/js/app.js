@@ -46,6 +46,10 @@ const ICONS = {
   thumbUp: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 11v9H4v-9h3Zm0 0 4-7a2 2 0 0 1 3 2l-1 4h5a2 2 0 0 1 2 2.3l-1.2 6A2 2 0 0 1 16.8 20H7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
   thumbDown: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M17 13V4h3v9h-3Zm0 0-4 7a2 2 0 0 1-3-2l1-4H6a2 2 0 0 1-2-2.3l1.2-6A2 2 0 0 1 7.2 4H17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
   note: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 5h16v11H8l-4 4V5Z M8 9h8 M8 12h5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" stroke-linecap="round"/></svg>',
+  stop: '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/></svg>',
+  send: '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  regen: '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  page: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
   trash: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
@@ -523,7 +527,15 @@ function renderUser(msg) {
     content.textContent = msg.text;
   }
   wrap.append(content);
-  if (msg.createdAt) wrap.append(timeElement(msg.createdAt));
+  const foot = document.createElement("div");
+  foot.className = "user-foot";
+  if (!attachment && msg.id) {
+    const edit = iconButton(ICONS.edit, "Edit question", "edit-btn");
+    edit.addEventListener("click", () => startEdit(el, msg));
+    foot.append(edit);
+  }
+  if (msg.createdAt) foot.append(timeElement(msg.createdAt));
+  wrap.append(foot);
   el.append(wrap);
   messagesEl.append(el);
 }
@@ -568,6 +580,12 @@ function fillAssistant(el, msg, chatId) {
   content.innerHTML = renderMarkdown(data.answer || msg.text || "", sources.length);
   body.append(content);
   if (sources.length) body.append(sourceList(sources, content));
+  if (data.stopped) {
+    const tag = document.createElement("div");
+    tag.className = "stopped-tag";
+    tag.textContent = "Stopped";
+    body.append(tag);
+  }
   if (data.emi && !msg.error) body.append(emiCard(data.emi));
 
   const meta = document.createElement("div");
@@ -590,12 +608,20 @@ function fillAssistant(el, msg, chatId) {
       } catch { /* clipboard blocked */ }
     });
     meta.append(copy);
+    if (chatId && isLastAssistant(chatId, msg)) {
+      const regen = regenerateButton(chatId);
+      regen.classList.add("regen-btn");
+      meta.append(regen);
+    }
   }
   body.append(meta);
   if (!msg.error && msg.id && chatId) {
     const form = feedbackForm(msg, chatId);
     meta.append(feedbackButtons(msg, chatId, form));
     body.append(form.el);
+  }
+  if (!msg.error && msg.suggestions && msg.suggestions.length && chatId && isLastAssistant(chatId, msg)) {
+    body.append(suggestionChips(msg.suggestions));
   }
 }
 
@@ -773,7 +799,12 @@ function sourceList(sources, content) {
       const open = item.classList.toggle("open");
       top.setAttribute("aria-expanded", String(open));
     });
-    item.append(top, excerpt);
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "source-view";
+    view.innerHTML = `${ICONS.page}<span>${/\.pdf$/i.test(s.uri) ? "View page" : "View"}</span>`;
+    view.addEventListener("click", () => openSourcePreview(s, i + 1));
+    item.append(top, excerpt, view);
     list.append(item);
   });
   box.append(list);
@@ -785,8 +816,9 @@ function sourceList(sources, content) {
     if (!item) return;
     item.classList.add("open", "flash");
     item.querySelector(".source-top").setAttribute("aria-expanded", "true");
-    item.scrollIntoView({ behavior: "smooth", block: "nearest" });
     setTimeout(() => item.classList.remove("flash"), 1200);
+    const n = Number(cite.dataset.cite);
+    openSourcePreview(sources[n - 1], n);
   });
   return box;
 }
@@ -954,10 +986,17 @@ function newChat() {
 }
 
 /* =====================================================================
-   Sending (streamed answers)
+   Sending (streamed answers, stop, edit/regenerate)
    ===================================================================== */
+let streamController = null;   // set while an answer streams, so Stop can abort it
+
 function updateSendState() {
-  sendButton.disabled = busy || !input.value.trim();
+  const streaming = Boolean(streamController);
+  sendButton.classList.toggle("stop", streaming);
+  sendButton.innerHTML = streaming ? ICONS.stop : ICONS.send;
+  sendButton.setAttribute("aria-label", streaming ? "Stop answering" : "Send message");
+  sendButton.title = streaming ? "Stop" : "Send";
+  sendButton.disabled = streaming ? false : (busy || !input.value.trim());
   attachButton.disabled = busy;
 }
 function autoGrow() {
@@ -990,13 +1029,9 @@ function finishReply(chatId, shell, reply) {
     delete target.pending;
     saveChats();
   }
-  if (currentId === chatId && shell.isConnected) {
-    fillAssistant(shell, reply, chatId);
-    followStream();
-  } else if (currentId === chatId) {
-    openChat(chatId);
-  }
+  streamController = null;
   busy = false;
+  if (currentId === chatId) openChat(chatId);   // re-render so only the newest answer has Regenerate/suggestions
   updateSendState();
   renderHistory();
   input.focus();
@@ -1008,12 +1043,13 @@ function tidyPartial(text) {
   return pairs % 2 ? text.replace(/\*\*(?![\s\S]*\*\*)/, "") : text;
 }
 
-// Reads the NDJSON stream: {"type":"meta"} -> many {"type":"delta"} -> {"type":"done"}.
-async function streamReply(body, shell) {
+// Reads the NDJSON stream: meta -> many delta -> done -> (suggestions).
+async function streamReply(body, shell, signal, userMsg) {
   const response = await apiFetch("/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok || !response.body) {
     const error = new Error(`Request failed (${response.status})`);
@@ -1026,6 +1062,7 @@ async function streamReply(body, shell) {
   let meta = {};
   let text = "";
   let done = null;
+  let suggestions = [];
   let contentEl = null;
   let painting = false;
   const paint = () => {
@@ -1040,32 +1077,50 @@ async function streamReply(body, shell) {
       if (!contentEl && shell.isConnected) contentEl = startStreamingView(shell, meta);
       text += event.text;
       if (!painting) { painting = true; requestAnimationFrame(paint); }
-    } else if (event.type === "done") done = event;
+    } else if (event.type === "done") {
+      done = event;
+      if (userMsg && event.user_message_id) userMsg.id = event.user_message_id;
+      streamController = null;   // answer complete: Stop turns back into Send while suggestions load
+      updateSendState();
+    } else if (event.type === "suggestions") suggestions = event.items || [];
     else if (event.type === "error") throw new Error(event.detail || "Something went wrong");
   };
-  for (;;) {
-    const { value, done: ended } = await reader.read();
-    if (ended) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      if (line) handle(line);
-    }
-  }
-  if (buffer.trim()) handle(buffer.trim());
-  if (!text) { const e = new Error("Empty answer"); e.fallback = true; throw e; }
-  return {
+  const result = () => ({
     role: "assistant",
     text,
     data: { ...meta, answer: text },
     id: done && done.message_id,
     createdAt: (done && done.created_at) || Date.now(),
-  };
+    suggestions,
+  });
+  try {
+    for (;;) {
+      const { value, done: ended } = await reader.read();
+      if (ended) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (line) handle(line);
+      }
+    }
+  } catch (error) {
+    if (error.name === "AbortError") {
+      // Stopped by the user: keep what arrived so far.
+      const partial = result();
+      partial.data.stopped = true;
+      if (!text) partial.text = partial.data.answer = "_Stopped before the answer started._";
+      return partial;
+    }
+    throw error;
+  }
+  if (buffer.trim()) handle(buffer.trim());
+  if (!text) { const e = new Error("Empty answer"); e.fallback = true; throw e; }
+  return result();
 }
 
-async function send(message) {
+async function send(message, { replaceFrom } = {}) {
   if (busy || !message) return;
   busy = true;
   const { chat, isNew } = ensureChat(makeTitle(message));
@@ -1077,24 +1132,28 @@ async function send(message) {
   saveChats();
   renderHistory();
 
+  // Hide earlier follow-up chips / regenerate buttons while the new answer comes in.
+  messagesEl.querySelectorAll(".followups, .regen-btn").forEach((n) => n.remove());
   renderUser(userMsg);
   const shell = renderAssistantShell();
   scrollToBottom();
   input.value = "";
   autoGrow();
+  streamController = new AbortController();
   updateSendState();
 
   // The chat id is also the server-side history key, so follow-ups keep context.
-  const body = { message, session_id: chatId, title: isNew ? chat.title : undefined };
+  const body = { message, session_id: chatId, title: isNew ? chat.title : undefined, replace_from: replaceFrom, suggest: true };
   let reply;
   try {
-    reply = await streamReply(body, shell);
+    reply = await streamReply(body, shell, streamController.signal, userMsg);
   } catch (error) {
     if (error.fallback) {
       // Streaming unavailable: fall back to the regular (non-streamed) endpoint.
       try {
         const data = await apiJson("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        reply = { role: "assistant", text: data.answer, data, id: data.message_id, createdAt: data.created_at || Date.now() };
+        if (data.user_message_id) userMsg.id = data.user_message_id;
+        reply = { role: "assistant", text: data.answer, data, id: data.message_id, createdAt: data.created_at || Date.now(), suggestions: data.suggestions || [] };
       } catch (inner) {
         reply = { role: "assistant", text: `Sorry, I couldn't reach LoanAssist. ${inner.message}`, error: true, createdAt: Date.now() };
       }
@@ -1106,9 +1165,10 @@ async function send(message) {
 }
 
 /* =====================================================================
-   Document upload: salary slip / bank statement -> income + eligibility
+   Document upload: small files inline, big files via S3 + SQS (background)
    ===================================================================== */
-const MAX_UPLOAD = 4 * 1024 * 1024;
+const MAX_INLINE_UPLOAD = 3 * 1024 * 1024;   // above this, the background pipeline is used
+const MAX_UPLOAD = 20 * 1024 * 1024;
 const UPLOAD_TYPES = ["application/pdf", "image/png", "image/jpeg"];
 
 function fileToBase64(file) {
@@ -1120,12 +1180,20 @@ function fileToBase64(file) {
   });
 }
 
+function uploadTitle(file) {
+  return /statement/i.test(file.name) ? "Bank statement check" : "Document check";
+}
+
 async function uploadDocument(file) {
   if (busy || !file) return;
   if (!UPLOAD_TYPES.includes(file.type)) { toast("Please upload a PDF, PNG or JPG file."); return; }
-  if (file.size > MAX_UPLOAD) { toast("Please upload a file smaller than 4 MB."); return; }
+  const big = file.size > MAX_INLINE_UPLOAD;
+  if (file.size > MAX_UPLOAD) { toast("Please upload a file smaller than 20 MB."); return; }
+  if (big && !REMOTE) { toast("Local mode supports files up to 3 MB."); return; }
+  if (big) { uploadLargeDocument(file); return; }
+
   busy = true;
-  const title = /statement/i.test(file.name) ? "Bank statement check" : "Salary slip check";
+  const title = uploadTitle(file);
   const { chat, isNew } = ensureChat(title);
   const chatId = chat.id;
   const userMsg = { role: "user", text: `📎 ${file.name}`, createdAt: Date.now(), data: { attachment: { filename: file.name, content_type: file.type } } };
@@ -1144,13 +1212,7 @@ async function uploadDocument(file) {
     const data = await apiJson("/documents", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: chatId,
-        title: isNew ? title : undefined,
-        filename: file.name,
-        content_type: file.type,
-        data_base64: await fileToBase64(file),
-      }),
+      body: JSON.stringify({ session_id: chatId, title: isNew ? title : undefined, filename: file.name, content_type: file.type, data_base64: await fileToBase64(file) }),
     });
     const [savedUser, savedReply] = data.messages;
     Object.assign(userMsg, { id: savedUser.id, createdAt: savedUser.createdAt });
@@ -1159,6 +1221,387 @@ async function uploadDocument(file) {
     reply = { role: "assistant", text: `Sorry, I couldn't read that document. ${error.message}`, error: true, createdAt: Date.now() };
   }
   finishReply(chatId, shell, reply);
+  if (panelMode === "checklist") openChecklist();
+}
+
+// Big file: presigned PUT to S3 -> queue -> poll until the worker is done (or the file lands in the DLQ).
+async function uploadLargeDocument(file) {
+  busy = true;
+  const title = uploadTitle(file);
+  const { chat, isNew } = ensureChat(title);
+  const chatId = chat.id;
+  const userMsg = { role: "user", text: `📎 ${file.name}`, createdAt: Date.now(), data: { attachment: { filename: file.name, content_type: file.type } } };
+  chat.messages.push(userMsg);
+  chat.pending = true;
+  saveChats();
+  renderHistory();
+  renderUser(userMsg);
+  const shell = renderAssistantShell(`Uploading ${(file.size / 1048576).toFixed(1)} MB…`);
+  const label = () => shell.querySelector(".thinking-label");
+  scrollToBottom();
+  updateSendState();
+  try {
+    const up = await apiJson("/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: chatId, title: isNew ? title : undefined, filename: file.name, content_type: file.type, size: file.size }),
+    });
+    const put = await fetch(up.upload_url, { method: "PUT", headers: { "Content-Type": up.content_type }, body: file });
+    if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+    const queued = await apiJson(`/chats/${chatId}/documents/${up.doc_id}/process`, { method: "POST" });
+    Object.assign(userMsg, { id: queued.message.id, createdAt: queued.message.createdAt });
+    busy = false;   // the user can keep chatting while the worker reads the file
+    updateSendState();
+    if (label()) label().textContent = "Queued — reading in the background. You can keep chatting.";
+    toast("Big file queued. It's processed in the background.");
+    const started = Date.now();
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const docs = await apiJson(`/chats/${chatId}/documents`);
+      const doc = docs.find((d) => d.doc_id === up.doc_id);
+      if (!doc) break;
+      if (label()) label().textContent = `${STATUS_TEXT[doc.status] || doc.status}${doc.attempts > 1 ? ` (attempt ${doc.attempts} of 3)` : ""} — you can keep chatting.`;
+      if (doc.status === "done" || doc.status === "failed" || Date.now() - started > 20 * 60 * 1000) break;
+    }
+    const target = getChat(chatId);
+    if (target) { target.messages = undefined; delete target.pending; }   // reload this chat from the server
+    if (currentId === chatId) await openChat(chatId);
+  } catch (error) {
+    finishReply(chatId, shell, { role: "assistant", text: `Sorry, the upload failed. ${error.message}`, error: true, createdAt: Date.now() });
+    return;
+  } finally {
+    busy = false;
+    updateSendState();
+  }
+  if (panelMode === "checklist") openChecklist();
+}
+
+/* =====================================================================
+   Edit a question, regenerate an answer, follow-up suggestions
+   ===================================================================== */
+function isLastAssistant(chatId, msg) {
+  const chat = getChat(chatId);
+  if (!chat || !chat.messages || !chat.messages.length) return false;
+  return chat.messages[chat.messages.length - 1] === msg;
+}
+
+function lastUserMessage(chat) {
+  for (let i = chat.messages.length - 1; i >= 0; i--) if (chat.messages[i].role === "user") return chat.messages[i];
+  return null;
+}
+
+// Drop `msg` and everything after it (locally), then ask `text` again with replace_from on the server.
+function resend(chatId, msg, text) {
+  const chat = getChat(chatId);
+  if (!chat || busy) return;
+  const index = chat.messages.indexOf(msg);
+  if (index < 0) return;
+  chat.messages = chat.messages.slice(0, index);
+  saveChats();
+  openChat(chatId).then(() => send(text, { replaceFrom: msg.id || undefined }));
+}
+
+function regenerateButton(chatId) {
+  const btn = iconButton(ICONS.regen, "Regenerate answer");
+  btn.addEventListener("click", () => {
+    const chat = getChat(chatId);
+    const question = chat && lastUserMessage(chat);
+    if (!question) { toast("This answer can't be regenerated."); return; }
+    // No id: the answer was stopped before the server saved the turn, so just ask again.
+    resend(chatId, question, question.text);
+  });
+  return btn;
+}
+
+function startEdit(el, msg) {
+  if (busy) return;
+  const chatId = currentId;
+  const wrap = el.querySelector(".user-wrap");
+  const editor = document.createElement("form");
+  editor.className = "edit-form";
+  editor.innerHTML = `<textarea rows="2" maxlength="4000"></textarea>
+    <div class="feedback-actions"><span class="feedback-hint">Answers after this question will be replaced.</span>
+    <button type="button" class="link-btn cancel">Cancel</button><button type="submit" class="small-btn">Send</button></div>`;
+  const box = editor.querySelector("textarea");
+  box.value = msg.text;
+  wrap.replaceWith(editor);
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+  editor.querySelector(".cancel").addEventListener("click", () => editor.replaceWith(wrap));
+  editor.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = box.value.trim();
+    if (!text) return;
+    resend(chatId, msg, text);
+  });
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); editor.requestSubmit(); }
+    if (e.key === "Escape") editor.replaceWith(wrap);
+  });
+}
+
+function suggestionChips(items) {
+  const row = document.createElement("div");
+  row.className = "followups";
+  for (const text of items) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "followup";
+    chip.textContent = text;
+    chip.addEventListener("click", () => send(text));
+    row.append(chip);
+  }
+  return row;
+}
+
+/* =====================================================================
+   Side panel: source preview (PDF page + highlight) and application checklist
+   ===================================================================== */
+const sidePanel = $("#sidePanel");
+const panelTitle = $("#panelTitle");
+const panelBody = $("#panelBody");
+let panelMode = null;
+
+function openPanel(mode, title) {
+  panelMode = mode;
+  panelTitle.textContent = title;
+  panelBody.innerHTML = "";
+  app.classList.add("panel-open");
+  sidePanel.setAttribute("aria-hidden", "false");
+  return panelBody;
+}
+function closePanel() {
+  panelMode = null;
+  app.classList.remove("panel-open");
+  sidePanel.setAttribute("aria-hidden", "true");
+}
+$("#closePanel").addEventListener("click", closePanel);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && panelMode) closePanel(); });
+
+let pdfjsReady = null;
+function loadPdfJs() {
+  pdfjsReady ||= new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    s.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      resolve(window.pdfjsLib);
+    };
+    s.onerror = () => { pdfjsReady = null; reject(new Error("Could not load the PDF viewer")); };
+    document.head.append(s);
+  });
+  return pdfjsReady;
+}
+
+const pdfCache = new Map();
+async function loadSourcePdf(uri) {
+  if (!pdfCache.has(uri)) {
+    pdfCache.set(uri, (async () => {
+      const [pdfjsLib, response] = await Promise.all([loadPdfJs(), apiFetch(`/sources/file?uri=${encodeURIComponent(uri)}`)]);
+      if (!response.ok) throw new Error(`Could not open the document (${response.status})`);
+      return pdfjsLib.getDocument({ data: new Uint8Array(await response.arrayBuffer()) }).promise;
+    })().catch((e) => { pdfCache.delete(uri); throw e; }));
+  }
+  return pdfCache.get(uri);
+}
+
+const norm = (t) => t.toLowerCase().replace(/[^a-z0-9%₹.]+/g, " ").replace(/\s+/g, " ").trim();
+
+async function openSourcePreview(source, number) {
+  const body = openPanel("source", `[${number}] ${sourceTitle(source)}`);
+  const isPdf = /\.pdf$/i.test(source.uri);
+  const pages = (source.pages && source.pages.length) ? source.pages : [1];
+  const info = document.createElement("div");
+  info.className = "preview-info";
+  info.textContent = isPdf ? `${decodeURIComponent(source.uri.split("/").pop())} · highlighted: the passage used for this answer`
+    : decodeURIComponent(source.uri.split("/").pop());
+  body.append(info);
+  if (!isPdf) {
+    const p = document.createElement("p");
+    p.className = "preview-text";
+    p.textContent = source.excerpt || "";
+    body.append(p);
+    return;
+  }
+  const nav = document.createElement("div");
+  nav.className = "preview-nav";
+  nav.innerHTML = `<button type="button" class="link-btn prev">‹ Prev</button><span class="page-label"></span><button type="button" class="link-btn next">Next ›</button>`;
+  const stage = document.createElement("div");
+  stage.className = "preview-stage";
+  stage.innerHTML = '<div class="loading-line">Opening document…</div>';
+  body.append(nav, stage);
+  const passage = norm(source.excerpt || "");
+  let pdf;
+  try { pdf = await loadSourcePdf(source.uri); } catch (e) { stage.innerHTML = ""; stage.append(Object.assign(document.createElement("p"), { className: "preview-text", textContent: e.message })); return; }
+  let current = Math.min(Math.max(pages[0], 1), pdf.numPages);
+  const render = async () => {
+    if (panelMode !== "source") return;
+    nav.querySelector(".page-label").textContent = `Page ${current} of ${pdf.numPages}${pages.includes(current) ? " · cited" : ""}`;
+    nav.querySelector(".prev").disabled = current <= 1;
+    nav.querySelector(".next").disabled = current >= pdf.numPages;
+    const page = await pdf.getPage(current);
+    // Render sharp at a fixed size; CSS scales it to the panel width (the panel may still be opening).
+    const viewport = page.getViewport({ scale: 900 / page.getViewport({ scale: 1 }).width });
+    const ratio = Math.min(window.devicePixelRatio || 1, 2);
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width * ratio;
+    canvas.height = viewport.height * ratio;
+    const holder = document.createElement("div");
+    holder.className = "preview-page";
+    holder.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+    holder.append(canvas);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise;
+    // Highlight the lines whose text is part of the cited passage.
+    const text = await page.getTextContent();
+    let first = null;
+    for (const item of text.items) {
+      const t = norm(item.str || "");
+      if (t.length < 4 || !passage.includes(t)) continue;
+      const [a, b, , , e, f] = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
+      const h = Math.hypot(a, b) || 10;
+      const mark = document.createElement("span");
+      mark.className = "hl";
+      const pct = (v, total) => `${(v / total) * 100}%`;
+      mark.style.left = pct(e, viewport.width);
+      mark.style.top = pct(f - h, viewport.height);
+      mark.style.width = pct(item.width * viewport.scale, viewport.width);
+      mark.style.height = pct(h * 1.15, viewport.height);
+      holder.append(mark);
+      first ||= mark;
+    }
+    stage.innerHTML = "";
+    stage.append(holder);
+    if (first) first.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+  };
+  nav.querySelector(".prev").addEventListener("click", () => { current -= 1; render(); });
+  nav.querySelector(".next").addEventListener("click", () => { current += 1; render(); });
+  render();
+}
+
+/* ---------- Application checklist ---------- */
+const CHECKLISTS = {
+  home: [
+    { label: "PAN card", types: ["pan_card"] },
+    { label: "Aadhaar card", types: ["aadhaar_card"] },
+    { label: "Address proof", types: ["aadhaar_card", "passport", "utility_bill"], hint: "Aadhaar, passport or utility bill" },
+    { label: "Salary slips (last 3 months)", types: ["salary_slip"], hint: "or ITR if self-employed", alt: ["itr"] },
+    { label: "Form 16 / ITR", types: ["form_16", "itr"] },
+    { label: "Bank statements (last 6 months)", types: ["bank_statement"] },
+    { label: "Property documents", types: ["property_document"], hint: "sale agreement, title deed, approved plan" },
+  ],
+  personal: [
+    { label: "PAN card", types: ["pan_card"] },
+    { label: "Aadhaar card", types: ["aadhaar_card"] },
+    { label: "Salary slips (last 3 months)", types: ["salary_slip"] },
+    { label: "Bank statements (last 3 months)", types: ["bank_statement"] },
+  ],
+};
+const LOAN_KEY = "loanassist.loanType";
+const STATUS_TEXT = { uploading: "Uploading…", queued: "Queued", processing: "Reading…", retrying: "Retrying…", done: "Received", failed: "Failed" };
+let checklistTimer = null;
+
+function guessLoanType(chat) {
+  const text = (chat && chat.messages ? chat.messages.map((m) => m.text).join(" ") : "").toLowerCase();
+  return /personal loan/.test(text) && !/home loan|housing/.test(text) ? "personal" : "home";
+}
+
+async function openChecklist() {
+  const chat = getChat(currentId);
+  const body = openPanel("checklist", "Application checklist");
+  let loanType;
+  try { loanType = JSON.parse(localStorage.getItem(LOAN_KEY) || "{}")[currentId]; } catch { loanType = null; }
+  loanType ||= guessLoanType(chat);
+  const head = document.createElement("div");
+  head.className = "checklist-head";
+  head.innerHTML = `<label>Loan type <select><option value="home">Home loan</option><option value="personal">Personal loan</option></select></label>
+    <span class="checklist-progress"></span>`;
+  const select = head.querySelector("select");
+  select.value = loanType;
+  const list = document.createElement("ul");
+  list.className = "checklist";
+  const note = document.createElement("p");
+  note.className = "storage-note";
+  note.textContent = "Upload each document with 📎; LoanAssist recognises the type automatically. Files up to 20 MB; big files are processed in the background.";
+  body.append(head, list, note);
+  select.addEventListener("change", () => {
+    try { const all = JSON.parse(localStorage.getItem(LOAN_KEY) || "{}"); all[currentId] = select.value; localStorage.setItem(LOAN_KEY, JSON.stringify(all)); } catch {}
+    refresh();
+  });
+
+  const refresh = async () => {
+    clearTimeout(checklistTimer);
+    if (panelMode !== "checklist") return;
+    let docs = [];
+    if (currentId && getChat(currentId) && getChat(currentId).messages && getChat(currentId).messages.length) {
+      try { docs = await apiJson(`/chats/${currentId}/documents`); } catch { docs = []; }
+    }
+    const items = CHECKLISTS[select.value];
+    let doneCount = 0;
+    list.innerHTML = "";
+    for (const item of items) {
+      const matches = docs.filter((d) => item.types.includes(d.document_type));
+      const done = matches.find((d) => d.status === "done");
+      if (done) doneCount += 1;
+      const li = document.createElement("li");
+      li.className = `check-item ${done ? "ok" : ""}`;
+      const mark = document.createElement("span");
+      mark.className = "check-mark";
+      mark.textContent = done ? "✓" : "";
+      const text = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = item.label;
+      const sub = document.createElement("span");
+      sub.textContent = done ? done.filename : (item.hint || "Not uploaded yet");
+      text.append(name, sub);
+      li.append(mark, text);
+      if (!done) {
+        const up = document.createElement("button");
+        up.type = "button";
+        up.className = "link-btn";
+        up.textContent = "Upload";
+        up.addEventListener("click", () => fileInput.click());
+        li.append(up);
+      }
+      list.append(li);
+    }
+    // In-flight and failed uploads (type not known yet, or failed).
+    const pending = docs.filter((d) => d.status && d.status !== "done");
+    for (const d of pending) {
+      const li = document.createElement("li");
+      li.className = `check-item pending ${d.status}`;
+      li.innerHTML = '<span class="check-mark">⏳</span><div><strong></strong><span></span></div>';
+      li.querySelector("strong").textContent = d.filename || "Document";
+      li.querySelector("div span").textContent = `${STATUS_TEXT[d.status] || d.status}${d.attempts > 1 ? ` (attempt ${d.attempts})` : ""}${d.error ? ` — ${d.error}` : ""}`;
+      if (d.status === "failed") {
+        li.querySelector(".check-mark").textContent = "!";
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "link-btn";
+        retry.textContent = "Retry";
+        retry.addEventListener("click", async () => {
+          try { await apiJson(`/chats/${currentId}/documents/${d.doc_id}/retry`, { method: "POST" }); toast("Queued again."); refresh(); }
+          catch (e) { toast(e.message); }
+        });
+        li.append(retry);
+      }
+      list.append(li);
+    }
+    head.querySelector(".checklist-progress").textContent = `${doneCount} of ${items.length} received`;
+    if (pending.some((d) => d.status !== "failed")) checklistTimer = setTimeout(refresh, 4000);
+  };
+  refresh();
+}
+
+/* =====================================================================
+   Export the chat (browser print -> Save as PDF)
+   ===================================================================== */
+function exportChat() {
+  const chat = getChat(currentId);
+  if (!chat || !chat.messages || !chat.messages.length) { toast("Open a chat to export it."); return; }
+  $("#printTitle").textContent = chat.title;
+  $("#printMeta").textContent = `Exported ${FULL_FMT.format(Date.now())} · LoanAssist gives information only; a loan officer makes the final decision.`;
+  closePanel();
+  window.print();
 }
 
 /* =====================================================================
@@ -1201,7 +1644,20 @@ input.addEventListener("input", () => { autoGrow(); updateSendState(); });
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value.trim()); }
 });
-form.addEventListener("submit", (e) => { e.preventDefault(); send(input.value.trim()); });
+form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (streamController) { streamController.abort(); return; }   // Stop
+  send(input.value.trim());
+});
+// While streaming the button is Stop. Handle the click directly: the empty, required
+// textarea would otherwise block the form's submit event.
+sendButton.addEventListener("click", (e) => {
+  if (!streamController) return;
+  e.preventDefault();
+  streamController.abort();
+});
+$("#exportChat").addEventListener("click", exportChat);
+$("#openChecklist").addEventListener("click", () => (panelMode === "checklist" ? closePanel() : openChecklist()));
 document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
   if (chip.dataset.action === "upload") fileInput.click();
   else send(chip.dataset.prompt);

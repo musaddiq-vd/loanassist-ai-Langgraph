@@ -32,6 +32,12 @@ def _message_id(ts: int, index: int) -> str:
     return f"{ts:013d}-{index}"
 
 
+def _sort_key(message_id: str) -> tuple[int, int]:
+    """'1793520000000-1' -> (1793520000000, 1); message ids sort by time, then position."""
+    ts, _, index = message_id.partition("-")
+    return int(ts), int(index or 0)
+
+
 def _exchange(messages: list[dict[str, Any]], message_id: str) -> tuple[str, str]:
     """The answer with this id and the user question just before it."""
     for i, message in enumerate(messages):
@@ -194,15 +200,38 @@ class DynamoChatStore:
 
     # ------------------------------------------------------------------ documents
 
-    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any]) -> None:
+    def delete_from(self, user_id: str, chat_id: str, message_id: str) -> int:
+        """Delete this message and every later one (edit / regenerate). Returns how many were removed."""
+        keys = [k for k in self._prefix(user_id, f"MSG#{chat_id}#", ProjectionExpression="pk, sk")
+                if _sort_key(k["sk"].split("#", 2)[2].replace("#", "-")) >= _sort_key(message_id)]
+        with self.table.batch_writer() as batch:
+            for key in keys:
+                batch.delete_item(Key={"pk": key["pk"], "sk": key["sk"]})
+        return len(keys)
+
+    # ------------------------------------------------------------------ documents
+
+    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any], doc_id: str | None = None) -> str:
+        """Insert or replace one document record (also used for queued / failed status)."""
+        doc_id = doc_id or document.get("doc_id") or f"{_now_ms():013d}"
         self.table.put_item(Item={
             "pk": self._pk(user_id),
-            "sk": f"DOC#{chat_id}#{_now_ms():013d}",
-            "data": json.dumps(document, ensure_ascii=False),
+            "sk": f"DOC#{chat_id}#{doc_id}",
+            "data": json.dumps({**document, "doc_id": doc_id}, ensure_ascii=False),
         })
+        return doc_id
+
+    def get_document(self, user_id: str, chat_id: str, doc_id: str) -> dict[str, Any] | None:
+        item = self.table.get_item(Key={"pk": self._pk(user_id), "sk": f"DOC#{chat_id}#{doc_id}"}).get("Item")
+        return json.loads(item["data"]) if item else None
 
     def list_documents(self, user_id: str, chat_id: str) -> list[dict[str, Any]]:
-        return [json.loads(i["data"]) for i in self._prefix(user_id, f"DOC#{chat_id}#")]
+        docs = []
+        for item in self._prefix(user_id, f"DOC#{chat_id}#"):
+            doc = json.loads(item["data"])
+            doc.setdefault("doc_id", item["sk"].rsplit("#", 1)[-1])
+            docs.append(doc)
+        return docs
 
 
 class MemoryChatStore:
@@ -272,8 +301,23 @@ class MemoryChatStore:
         self.chats.pop((user_id, chat_id), None)
         self.documents.pop((user_id, chat_id), None)
 
-    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any]) -> None:
-        self.documents.setdefault((user_id, chat_id), []).append(document)
+    def delete_from(self, user_id: str, chat_id: str, message_id: str) -> int:
+        chat = self.chats.get((user_id, chat_id))
+        if not chat:
+            return 0
+        keep = [m for m in chat["messages"] if _sort_key(m["id"]) < _sort_key(message_id)]
+        removed = len(chat["messages"]) - len(keep)
+        chat["messages"] = keep
+        return removed
+
+    def save_document(self, user_id: str, chat_id: str, document: dict[str, Any], doc_id: str | None = None) -> str:
+        doc_id = doc_id or document.get("doc_id") or f"{_now_ms():013d}"
+        docs = self.documents.setdefault((user_id, chat_id), [])
+        docs[:] = [d for d in docs if d.get("doc_id") != doc_id] + [{**document, "doc_id": doc_id}]
+        return doc_id
+
+    def get_document(self, user_id: str, chat_id: str, doc_id: str) -> dict[str, Any] | None:
+        return next((d for d in self.documents.get((user_id, chat_id), []) if d.get("doc_id") == doc_id), None)
 
     def list_documents(self, user_id: str, chat_id: str) -> list[dict[str, Any]]:
         return list(self.documents.get((user_id, chat_id), []))

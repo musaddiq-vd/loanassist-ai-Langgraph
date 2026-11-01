@@ -4,7 +4,12 @@ from typing import Any
 
 from src.app.loan_math import FOIR_LIMIT, MIN_NET_INCOME, affordability, format_inr, format_tenure
 
-DOC_LABELS = {"salary_slip": "Salary slip", "bank_statement": "Bank statement", "other": "Document"}
+DOC_LABELS = {
+    "salary_slip": "Salary slip", "bank_statement": "Bank statement", "form_16": "Form 16", "itr": "Income tax return",
+    "pan_card": "PAN card", "aadhaar_card": "Aadhaar card", "passport": "Passport", "utility_bill": "Utility bill",
+    "property_document": "Property document", "other": "Document",
+}
+INCOME_TYPES = {"salary_slip", "bank_statement"}
 
 
 def clean_extraction(raw: dict[str, Any], filename: str) -> dict[str, Any]:
@@ -16,6 +21,10 @@ def clean_extraction(raw: dict[str, Any], filename: str) -> dict[str, Any]:
             return None
         return value if 0 <= value <= 100_000_000 else None
 
+    def text(key: str, limit: int) -> str:
+        value = str(raw.get(key) or "").strip()[:limit]
+        return "" if value.lower() in {"n/a", "na", "none", "null", "unknown", "-", "not available"} else value
+
     doc_type = raw.get("document_type") if raw.get("document_type") in DOC_LABELS else "other"
     net = money("net_monthly_income") or None
     emis = money("existing_emis_monthly") or 0.0
@@ -26,8 +35,8 @@ def clean_extraction(raw: dict[str, Any], filename: str) -> dict[str, Any]:
     return {
         "filename": filename,
         "document_type": doc_type,
-        "employer": str(raw.get("employer") or "")[:120],
-        "period": str(raw.get("period") or "")[:60],
+        "employer": text("employer", 120),
+        "period": text("period", 60),
         "gross_monthly_income": money("gross_monthly_income"),
         "net_monthly_income": net,
         "existing_emis_monthly": emis,
@@ -42,6 +51,14 @@ def summary_markdown(doc: dict[str, Any]) -> str:
     label = DOC_LABELS[doc["document_type"]]
     where = " · ".join(x for x in (doc["employer"], doc["period"]) if x)
     lines = [f"**{label} analysed**" + (f" — {where}" if where else "")]
+
+    if doc["document_type"] not in INCOME_TYPES and doc["document_type"] != "other":
+        # Identity / address / property / tax documents: only tick them off, never repeat their contents.
+        return "\n".join([
+            f"**{label} received** ✅",
+            "",
+            "Added to your application checklist. Open **Checklist** (top bar) to see what's still missing.",
+        ])
 
     if doc["document_type"] == "other" or not doc["net_monthly_income"]:
         lines += [

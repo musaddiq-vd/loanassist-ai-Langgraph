@@ -64,6 +64,12 @@
 | ⚡ **Streaming answers** | Answers appear word by word (Bedrock ConverseStream → API Gateway REST response streaming), with an automatic fallback to the normal endpoint. |
 | 📎 **Salary slip / bank statement check** | Upload a PDF or image; Nova Lite reads the income and EMIs, and LoanAssist shows debt-to-income, room for a new EMI and an estimated max loan. Ask follow-up questions about the document in the same chat. |
 | 📑 **Real citations** | Answers cite the policy documents inline as [1], [2]; a numbered *Sources* list under the answer shows the document, section and **page number** (for PDFs) and opens the exact passage. Asking *“mention citations”* rebuilds the answer from the documents. |
+| 🔎 **Source preview** | Click a citation `[n]` (or *View page*) and the policy PDF opens in a side panel **on the cited page, with the passage highlighted**. Prev/next to read around it. |
+| 💡 **Follow-up suggestions** | 2–3 next-question chips under the latest answer, written by Nova from the question and answer. One click asks it. |
+| ⏹️ **Stop · Regenerate · Edit** | Stop an answer while it streams (the partial answer is kept), regenerate the last answer, or edit an earlier question and ask again — later messages are replaced on the server too. |
+| 🖨️ **Export to PDF** | One click prints the chat as a clean PDF (no sidebar or buttons, sources expanded). |
+| ✅ **Application checklist** | Per loan type (home / personal), a checklist of required documents: which are uploaded, processing, failed (with *Retry*) or still missing. Nova classifies each upload (salary slip, bank statement, Form 16, ITR, PAN, Aadhaar, passport, utility bill, property papers). |
+| 📦 **Big files in the background** | Files over 3 MB (up to 20 MB) go browser → S3 (presigned URL) → **SQS** → worker Lambda, with 3 retries and a **dead-letter queue** plus a CloudWatch alarm that emails the team. You can keep chatting meanwhile. |
 | 👍 **Answer feedback** | Thumbs up/down plus a written *Give feedback* note on every answer. Saved in DynamoDB; a 👎 or a note emails the team. |
 | 🕒 **Timestamps** | Every message shows its time, with *Today / Yesterday* dividers. |
 | 💬 **Clean chat UI** | Sidebar history, markdown answers and tables, source chips, tool tags, copy button, suggestion prompts, light/dark toggle, mobile friendly. |
@@ -182,7 +188,7 @@ aws dynamodb query --table-name <ChatsTable> --key-condition-expression "pk = :p
 
 ```mermaid
 flowchart LR
-    F([📎 PDF / PNG / JPG<br/>max 4 MB]) --> N[🤖 Nova Lite<br/>reads the document]
+    F([📎 PDF / PNG / JPG<br/>≤ 3 MB inline]) --> N[🤖 Nova Lite<br/>reads the document]
     N -->|strict tool| X[income · EMIs · key facts<br/><i>no account no. / PAN / Aadhaar</i>]
     X --> M[🧮 FOIR maths<br/>EMIs ≤ 50% of income]
     M --> S[📊 Summary in chat]
@@ -194,6 +200,39 @@ flowchart LR
 - **No double counting:** on a salary slip, loan EMIs are payroll deductions, so they are added back to take-home pay before the debt-to-income check (on a bank statement they are not).
 - Policy used (from the knowledge base): total EMIs ≤ 50% of monthly income, minimum income ₹25,000, CIBIL < 650 → loan officer review.
 - Try it with [`docs/samples/sample-salary-slip.pdf`](docs/samples/sample-salary-slip.pdf) (fictional data).
+
+### Big documents: S3 → SQS → worker → DLQ
+
+Files up to **3 MB** are read straight away by the API. Bigger files (up to **20 MB**) are handled in the background so the API never times out:
+
+```mermaid
+flowchart LR
+    B([🌐 Browser]) -->|1 · POST /uploads| A[⚙️ API Lambda]
+    A -->|presigned PUT URL| B
+    B -->|2 · PUT file| U[(🪣 Uploads bucket<br/>auto-delete 7 days)]
+    B -->|3 · POST …/process| A
+    A -->|job| Q[[📬 SQS DocumentQueue]]
+    Q --> W[🛠️ Worker Lambda]
+    W -->|PDF text via pypdf<br/>or image| N[🤖 Nova Lite]
+    W -->|status + summary| D[(DynamoDB DOC#)]
+    W -. "3 failed tries<br/>or unreadable file" .-> DLQ[[☠️ DocumentDLQ<br/>kept 14 days]]
+    DLQ --> AL{{⏰ CloudWatch alarm}} --> SNS[📧 team email]
+    B -->|4 · polls status every 4 s| A
+```
+
+| Status | Meaning |
+|---|---|
+| `uploading` → `queued` → `processing` | Normal path, shown live in the chat and the checklist |
+| `retrying` | A temporary error (e.g. Bedrock throttling); SQS tries again, up to 3 times |
+| `done` | Facts saved, summary posted in the chat, the file is deleted from S3 |
+| `failed` | Unreadable file (scanned PDF without text, too-big image, damaged PDF) → straight to the DLQ; or 3 failed tries → SQS moves it to the DLQ. The checklist shows the reason and a **Retry** button |
+
+Inspect the dead-letter queue:
+
+```powershell
+$dlq = aws cloudformation describe-stacks --stack-name loanassist-ai --query "Stacks[0].Outputs[?OutputKey=='DocumentDLQUrl'].OutputValue" --output text
+aws sqs receive-message --queue-url $dlq --max-number-of-messages 10
+```
 
 ---
 
@@ -278,12 +317,14 @@ aws cloudformation describe-stacks --stack-name loanassist-ai --query "Stacks[0]
 # 2. Empty the two buckets (CloudFormation can't delete non-empty buckets)
 aws s3 rm s3://<FrontendBucket> --recursive
 aws s3 rm s3://<DocsBucket> --recursive
+aws s3 rm s3://<UploadsBucket> --recursive
 
 # 3. Delete the stack (CloudFront takes ~10–15 minutes)
 sam delete --stack-name loanassist-ai --no-prompts
 
 # 4. Delete what CloudFormation doesn't own
 aws logs delete-log-group --log-group-name /aws/lambda/<LoanAssistFunction name>
+aws logs delete-log-group --log-group-name /aws/lambda/<DocumentWorkerFunction name>
 aws ssm delete-parameter --name /loanassist/langsmith-api-key   # only if you set up LangSmith
 ```
 
@@ -297,6 +338,7 @@ aws dynamodb list-tables --query "TableNames[?starts_with(@, 'loanassist-ai-')]"
 aws cognito-idp list-user-pools --max-results 60 --query "UserPools[?Name=='loanassist-ai-users'].Id" --output text
 aws sns list-topics --query "Topics[?contains(TopicArn, ':loanassist-ai-')].TopicArn" --output text
 aws logs describe-log-groups --log-group-name-prefix /aws/lambda/loanassist-ai- --query "logGroups[].logGroupName" --output text
+aws sqs list-queues --queue-name-prefix loanassist-ai --output text
 ```
 
 > [!NOTE]
@@ -315,6 +357,9 @@ aws logs describe-log-groups --log-group-name-prefix /aws/lambda/loanassist-ai- 
 | `LoanAssistFunction` + `LoanAssistApi` | Lambda (FastAPI) behind API Gateway |
 | `FrontendBucket` + `Distribution` | Private UI bucket served by CloudFront (OAC) |
 | `ChatsTable` | DynamoDB on-demand table for per-user chat history |
+| `UploadsBucket` | Private S3 bucket for big uploads (presigned PUT, files auto-deleted after 7 days) |
+| `DocumentQueue` + `DocumentDLQ` + `DocumentDLQAlarm` | SQS queue (3 tries) and dead-letter queue; the alarm emails the team when a job lands in the DLQ |
+| `DocumentWorkerFunction` | Lambda that reads big documents from the queue |
 | `UserPool` + `UserPoolDomain` + `UserPoolClient` + `ManagedLoginBranding` | Cognito accounts and hosted sign-in / sign-up page |
 | IAM roles | Least-privilege, scoped to the exact model, KB, Guardrail, table, bucket and index |
 
@@ -339,6 +384,8 @@ All prices are **us-east-1 on-demand**, as published by AWS at the time of writi
 | **S3** (frontend + docs) | Storage · requests | ~$0.023 / GB-month (a few MB here → cents) |
 | **DynamoDB** (on-demand) | Writes · reads · storage | $0.625 / 1M write units · $0.125 / 1M read units · $0.25 / GB-month (first 25 GB free, always) |
 | **Cognito** (Essentials) | Monthly active users (MAU) | First 10,000 MAU free every month (does not expire) · then $0.015 / MAU |
+| **SQS** (big uploads + DLQ) | Requests | First 1M requests / month free (always), then $0.40 / 1M |
+| **CloudWatch alarm** (DLQ) | Alarms | First 10 alarms free, then $0.10 / alarm-month |
 | **SNS** (feedback emails) | Email notifications | First 1,000 emails / month free, then $2 per 100,000 |
 | **CloudWatch Logs** | Ingestion · storage | $0.50 / GB ingested · free tier 5 GB / month |
 
@@ -425,8 +472,13 @@ Authorization: <id_token>
 |---|---|---|
 | `GET` | `/api/health` | Health check (no sign-in) |
 | `POST` | `/api/v1/chat` | Ask a question; saves both messages to the chat |
-| `POST` | `/api/v1/chat/stream` | Same, but streams NDJSON events: `meta` → many `delta` → `done` |
-| `POST` | `/api/v1/documents` | Upload a salary slip / bank statement (base64, ≤ 4 MB) → income + eligibility summary |
+| `POST` | `/api/v1/chat/stream` | Same, but streams NDJSON events: `meta` → many `delta` → `done` → `suggestions` (when `"suggest": true`). `"replace_from": "<messageId>"` edits/regenerates from that question |
+| `POST` | `/api/v1/documents` | Upload a document inline (base64, ≤ 4 MB) → facts + summary |
+| `POST` | `/api/v1/uploads` | Big file (≤ 20 MB): returns `doc_id` and a presigned S3 PUT URL |
+| `POST` | `/api/v1/chats/{id}/documents/{docId}/process` | File is in S3 → post the attachment message and queue it on SQS |
+| `POST` | `/api/v1/chats/{id}/documents/{docId}/retry` | Queue a failed big upload again |
+| `GET` | `/api/v1/chats/{id}/documents` | Status of every document in the chat (checklist) |
+| `GET` | `/api/v1/sources/file?uri=s3://…` | The cited policy PDF (docs bucket only), for the source preview |
 | `PUT` | `/api/v1/chats/{id}/messages/{messageId}/feedback` | `{ "rating": "up" \| "down" \| null, "comment": "optional note" }` |
 | `GET` | `/api/v1/chats` | List your chats (id, title, timestamps) |
 | `GET` | `/api/v1/chats/{id}` | One chat with all its messages |
@@ -517,10 +569,12 @@ loanassist-ai/
 ├── frontend/              # Chat UI (index.html, css/, js/app.js, js/auth-config.js)
 ├── knowledge-base/        # Policy PDFs + <file>.metadata.json loan-type tags (source: docs/policy-src/)
 ├── src/
+│   ├── worker.py          # SQS worker Lambda for big documents (retries → DLQ)
 │   └── app/
 │       ├── main.py        # FastAPI routes
 │       ├── agent.py       # LangGraph state, tools and routing
 │       ├── documents.py   # Salary slip / bank statement summary
+│       ├── document_jobs.py # Read/classify documents, job status, permanent vs retryable errors
 │       ├── loan_math.py   # EMI parsing/maths, CIBIL + loan-type detection, fast routing
 │       ├── observability.py # optional LangSmith tracing
 │       ├── config.py      # Environment settings
@@ -534,7 +588,7 @@ loanassist-ai/
 ├── destroy.ps1            # Delete everything + verify (stops all charges)
 ├── evals/                 # 50-case golden set, runner, results (see evals/README.md)
 ├── .github/workflows/     # CI: tests on every push, evals when AWS access is set up
-├── tests/                 # pytest: loan maths, CIBIL, routing, API, streaming, documents
+├── tests/                 # pytest: loan maths, routing, API, streaming, documents, edit, queue/DLQ
 ├── run.sh                 # Lambda start-up (uvicorn behind the Lambda Web Adapter)
 ├── docs/                  # architecture diagram, screenshots, sample salary slip
 └── requirements.txt

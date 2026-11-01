@@ -111,7 +111,11 @@ def build_loan_agent(bedrock: BedrockService):
         raw = bedrock.extract_emi_params(question, history) or {}
         inputs = validate_emi_inputs(raw.get("principal_inr"), raw.get("annual_rate_percent"), raw.get("tenure_months"))
         # 2) Rule-based parser for anything the LLM missed: this question first, then earlier user messages.
-        inputs.fill_from(parse_emi_inputs(question))
+        parsed = parse_emi_inputs(question)
+        if parsed.tenure_months is not None:
+            # An explicit "15 years" / "180 months" in the question wins: Nova sometimes returns 15 months for 15 years.
+            inputs.tenure_months = parsed.tenure_months
+        inputs.fill_from(parsed)
         for line in reversed(history):
             if not inputs.missing():
                 break

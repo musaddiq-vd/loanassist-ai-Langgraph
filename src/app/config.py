@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     chats_table: str = ""
     # SNS topic for feedback alerts (👎 or written comments). Empty = no alerts.
     feedback_topic_arn: str = ""
+    # Big-document pipeline (empty locally = process inline) and the policy PDFs bucket for source preview.
+    uploads_bucket: str = ""
+    document_queue_url: str = ""
+    document_dlq_url: str = ""
+    docs_bucket: str = ""
     # Optional LangSmith tracing: a key directly (local .env) or an SSM SecureString name (AWS).
     langsmith_api_key: str = ""
     langsmith_api_key_param: str = ""

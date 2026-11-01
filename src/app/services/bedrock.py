@@ -13,6 +13,9 @@ from src.app.schemas import Source
 
 logger = logging.getLogger(__name__)
 
+DOCUMENT_TYPES = ["salary_slip", "bank_statement", "form_16", "itr", "pan_card", "aadhaar_card", "passport",
+                  "utility_bill", "property_document", "other"]
+
 SYSTEM_PROMPT = """You are LoanAssist, a helpful loan-information assistant.
 Use the supplied knowledge-base context only for product and policy claims.
 Tool results in the context (for example an EMI estimate) are already calculated and correct:
@@ -76,7 +79,7 @@ def number_passages(results: list[dict[str, Any]]) -> tuple[str, list[Source]]:
         if sections[uri]:
             where.append("section: " + "; ".join(sections[uri]))
         blocks.append(f"[{number}] {_document_title(uri)} ({' · '.join(where)}):\n{passage}")
-        sources.append(Source(title=_document_title(uri), uri=uri, excerpt=passage[:600],
+        sources.append(Source(title=_document_title(uri), uri=uri, excerpt=passage[:1500],
                               pages=sorted(pages[uri]), sections=sections[uri]))
     return "\n\n".join(blocks), sources
 
@@ -153,6 +156,37 @@ class BedrockService:
         return None
 
     @traceable(name="nova_router", run_type="llm")
+    @traceable(name="nova_followups", run_type="llm")
+    def suggest_followups(self, question: str, answer: str, tool: str | None) -> list[str]:
+        """Up to 3 short next questions the customer might ask, in the customer's language."""
+        tool_spec = {"toolSpec": {"name": "followups", "description": "Suggest next questions.", "inputSchema": {"json": {
+            "type": "object",
+            "properties": {"questions": {"type": "array", "items": {"type": "string"}, "maxItems": 3,
+                                         "description": "2-3 short follow-up questions (max 8 words each) the customer could ask next."}},
+            "required": ["questions"],
+        }}}}
+        prompt = (
+            "A customer is chatting with a bank's loan assistant. Suggest 2-3 short, useful next questions the CUSTOMER "
+            "could ask, written from the customer's point of view. Language: match the customer's question exactly - "
+            "if it is in English, write in English; use Hinglish only if the customer wrote in Hinglish. Only loan "
+            "topics: EMIs, eligibility, documents, fees, process, their uploaded documents."
+            f"\n\nCustomer: {question}\nAssistant ({tool or 'answer'}): {answer[:1200]}"
+        )
+        try:
+            response = self.runtime.converse(
+                modelId=self.settings.bedrock_model_id,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                toolConfig={"tools": [tool_spec], "toolChoice": {"tool": {"name": "followups"}}},
+                inferenceConfig={"maxTokens": 150, "temperature": 0.3},
+            )
+            for block in response["output"]["message"]["content"]:
+                if "toolUse" in block:
+                    items = block["toolUse"].get("input", {}).get("questions", [])
+                    return [q.strip()[:80] for q in items if isinstance(q, str) and q.strip()][:3]
+        except Exception:
+            logger.exception("Follow-up suggestions failed")
+        return []
+
     def select_action(self, question: str, history: list[str]) -> str:
         """The LLM selects one allowed action; fallback keeps the API resilient."""
         router_prompt = """Choose exactly one action for the customer's loan query.
@@ -219,9 +253,11 @@ get_customer_details, document_question, direct_answer. Return JSON only: {"acti
 
     # The file itself is never sent to LangSmith, only its format and size.
     @traceable(name="nova_read_document", run_type="llm",
-               process_inputs=lambda i: {"file_format": i.get("file_format"), "size_bytes": len(i.get("data") or b"")})
-    def extract_income_document(self, data: bytes, file_format: str) -> dict[str, Any] | None:
-        """Read a salary slip / bank statement (PDF or image) and return the income facts via a strict tool."""
+               process_inputs=lambda i: {"file_format": i.get("file_format"), "size_bytes": len(i.get("data") or b""),
+                                         "text_chars": len(i.get("text") or "")})
+    def extract_income_document(self, data: bytes, file_format: str, text: str | None = None) -> dict[str, Any] | None:
+        """Read an applicant's document (PDF or image) via a strict tool: its type, and for salary slips /
+        bank statements the income facts. Large PDFs are passed as extracted `text` instead of bytes."""
         tool = {
             "toolSpec": {
                 "name": "income_document",
@@ -229,7 +265,7 @@ get_customer_details, document_question, direct_answer. Return JSON only: {"acti
                 "inputSchema": {"json": {
                     "type": "object",
                     "properties": {
-                        "document_type": {"type": "string", "enum": ["salary_slip", "bank_statement", "other"]},
+                        "document_type": {"type": "string", "enum": DOCUMENT_TYPES},
                         "employer": {"type": "string", "description": "Employer / company name, if shown."},
                         "period": {"type": "string", "description": "Month or date range covered, e.g. 'October 2026'."},
                         "gross_monthly_income": {"type": "number", "description": "Gross monthly salary in rupees. Omit if not shown."},
@@ -242,14 +278,17 @@ get_customer_details, document_question, direct_answer. Return JSON only: {"acti
                 }},
             }
         }
-        if file_format == "pdf":
-            source: dict[str, Any] = {"document": {"format": "pdf", "name": "uploaded-document", "source": {"bytes": data}}}
+        if text is not None:
+            source: dict[str, Any] = {"text": f"Text extracted from the uploaded PDF:\n{text[:60000]}"}
+        elif file_format == "pdf":
+            source = {"document": {"format": "pdf", "name": "uploaded-document", "source": {"bytes": data}}}
         else:
             source = {"image": {"format": file_format, "source": {"bytes": data}}}
         prompt = (
-            "This is a customer's salary slip or bank statement. Read it carefully and record the income facts "
-            "with the income_document tool. Use rupee amounts as plain numbers. If something is not shown, omit it. "
-            "If the document is not a salary slip or bank statement, set document_type to 'other'."
+            "This is a document a loan applicant uploaded. First decide its document_type. For a salary slip or bank "
+            "statement, also record the income facts. Use rupee amounts as plain numbers. If something is not shown, "
+            "omit it. For identity, address or property documents only set document_type, a one-line key_facts "
+            "(e.g. 'PAN card of the applicant') and confidence - never copy ID numbers, names of other people or addresses."
         )
         response = self.runtime.converse(
             modelId=self.settings.bedrock_model_id,
