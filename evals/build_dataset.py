@@ -11,6 +11,7 @@ Each case can check:
   citations          "required" (valid [n] citations + sources), "none" (no sources, no [n]),
                      "required_if_sources" ([n] needed only when sources were returned)
   sources_include    these files must be among the sources
+  pages              every source must carry PDF page numbers
   review             expected requires_human_review flag
   critical           a regression here fails the run even if the overall score is fine
 """
@@ -66,26 +67,26 @@ add("elig-08", "eligibility", "My credit score is 700, salary 60000 a month. Can
 
 # ---------------------------------------------------------------- Policy look-ups with citations (14)
 def policy(case_id: str, question: str, sources: list[str], **checks) -> None:
-    add(case_id, "policy", question, expected_tool="retrieve_loan_documents", citations="required", sources_include=sources, **checks)
+    add(case_id, "policy", question, expected_tool="retrieve_loan_documents", citations="required", sources_include=sources, pages=True, **checks)
 
 
-policy("pol-01", "What documents are required for a home loan?", ["home-loan.md"], must_include=["PAN", "Aadhaar"], critical=True)
-policy("pol-02", "What documents are required for a personal loan?", ["personal-loan.md"], must_include=["PAN"], critical=True)
-policy("pol-03", "What is the maximum tenure for a home loan?", ["home-loan.md"], must_include=["30"])
-policy("pol-04", "What is the loan-to-value ratio for home loans?", ["home-loan.md"], must_include=["80"])
-policy("pol-05", "What is the processing fee for a home loan?", ["home-loan.md"], must_include=["0.5"])
-policy("pol-06", "Are there prepayment charges on a floating-rate home loan?", ["home-loan.md"], must_include_any=["no ", "not ", "no prepayment"])
-policy("pol-07", "What is the maximum personal loan amount?", ["personal-loan.md"], must_include=["25"])
-policy("pol-08", "What is the tenure for a personal loan?", ["personal-loan.md"], must_include=["60"])
-policy("pol-09", "Can I foreclose a personal loan and what are the foreclosure charges?", ["personal-loan.md"], must_include=["4%"])
-policy("pol-10", "What is the minimum age required to apply for a loan?", ["eligibility-and-process.md"], must_include=["21"])
-policy("pol-11", "What is the minimum monthly income for salaried applicants?", ["eligibility-and-process.md"], must_include=["25,000"])
-policy("pol-12", "Is collateral required for a personal loan?", ["personal-loan.md"], must_include_any=["no collateral", "not required", "no,"])
-policy("pol-13", "What is the maximum age at loan maturity for self-employed applicants?", ["eligibility-and-process.md"], must_include=["65"])
-policy("pol-14", "What share of my income can go towards EMIs?", ["eligibility-and-process.md"], must_include=["50"])
+policy("pol-01", "What documents are required for a home loan?", ["home-loan.pdf"], must_include=["PAN", "Aadhaar"], critical=True)
+policy("pol-02", "What documents are required for a personal loan?", ["personal-loan.pdf"], must_include=["PAN"], critical=True)
+policy("pol-03", "What is the maximum tenure for a home loan?", ["home-loan.pdf"], must_include=["30"])
+policy("pol-04", "What is the loan-to-value ratio for home loans?", ["home-loan.pdf"], must_include=["80"])
+policy("pol-05", "What is the processing fee for a home loan?", ["home-loan.pdf"], must_include=["0.5"])
+policy("pol-06", "Are there prepayment charges on a floating-rate home loan?", ["home-loan.pdf"], must_include_any=["no ", "not ", "no prepayment"])
+policy("pol-07", "What is the maximum personal loan amount?", ["personal-loan.pdf"], must_include=["25"])
+policy("pol-08", "What is the tenure for a personal loan?", ["personal-loan.pdf"], must_include=["60"])
+policy("pol-09", "Can I foreclose a personal loan and what are the foreclosure charges?", ["personal-loan.pdf"], must_include=["4%"])
+policy("pol-10", "What is the minimum age required to apply for a loan?", ["eligibility-and-process.pdf"], must_include=["21"])
+policy("pol-11", "What is the minimum monthly income for salaried applicants?", ["eligibility-and-process.pdf"], must_include=["25,000"])
+policy("pol-12", "Is collateral required for a personal loan?", ["personal-loan.pdf"], must_include_any=["no collateral", "not required", "no,"])
+policy("pol-13", "What is the maximum age at loan maturity for self-employed applicants?", ["eligibility-and-process.pdf"], must_include=["65"])
+policy("pol-14", "What share of my income can go towards EMIs?", ["eligibility-and-process.pdf"], must_include=["50"])
 
 # ---------------------------------------------------------------- Process + citation follow-ups (5)
-add("proc-01", "process", "Explain the loan application process step by step", expected_tool="retrieve_loan_documents", citations="required", sources_include=["eligibility-and-process.md"], must_include=["sanction"], critical=True)
+add("proc-01", "process", "Explain the loan application process step by step", expected_tool="retrieve_loan_documents", citations="required", sources_include=["eligibility-and-process.pdf"], must_include=["sanction"], critical=True)
 add("proc-02", "process", "could you please mention here citations", history=H_PROC, expected_tool="retrieve_loan_documents", citations="required", critical=True)
 add("proc-03", "process", "What is the source for the minimum income requirement?", expected_tool="retrieve_loan_documents", citations="required", must_include=["25,000"])
 add("proc-04", "process", "Does a home loan need property valuation?", expected_tool="retrieve_loan_documents", citations="required", must_include=["valuation"])

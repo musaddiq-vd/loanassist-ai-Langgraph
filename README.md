@@ -207,7 +207,9 @@ flowchart LR
 
 ### 2. Add your documents
 
-Put loan policy files (PDF, DOCX, MD, TXT…) in [`knowledge-base/`](knowledge-base/). Sample policies are included so the app works on the first deploy.
+Put loan policy files (PDF, DOCX, MD, TXT…) in [`knowledge-base/`](knowledge-base/). Three **sample policy PDFs** (fictional "Example Bank Ltd": home loan, personal loan, eligibility & process) are included so the app works on the first deploy; regenerate them with `python docs/policy-src/build_policy_pdfs.py`, or simply replace them with your bank's real PDFs.
+
+**Use PDFs for page numbers:** for PDF files Bedrock records the page of every chunk, so citations show e.g. *Home loan · p. 2*. (A chunk that runs across a page break is labelled with the page it starts on.) Markdown files give section names instead.
 
 Tag each file with its loan type in a sidecar `<file>.metadata.json`, so a home-loan question only searches home-loan (and general) documents:
 
@@ -513,7 +515,7 @@ Locally there is **no sign-in**: `frontend/js/auth-config.js` is `null`, so the 
 ```text
 loanassist-ai/
 ├── frontend/              # Chat UI (index.html, css/, js/app.js, js/auth-config.js)
-├── knowledge-base/        # Documents + <file>.metadata.json loan-type tags
+├── knowledge-base/        # Policy PDFs + <file>.metadata.json loan-type tags (source: docs/policy-src/)
 ├── src/
 │   └── app/
 │       ├── main.py        # FastAPI routes

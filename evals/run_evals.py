@@ -97,6 +97,8 @@ def check(case: dict[str, Any], out: dict[str, Any]) -> list[str]:
     if invalid:
         fails.append(f"citations: invalid numbers {invalid} (only {n_sources} sources)")
     files = {s.uri.rsplit('/', 1)[-1] for s in out["sources"] if s.uri}
+    if case.get("pages") and any(not s.pages for s in out["sources"]):
+        fails.append("pages: a source has no page numbers")
     for name in case.get("sources_include", []):
         if name not in files:
             fails.append(f"source missing: {name} (got {sorted(files)})")
@@ -155,7 +157,7 @@ def run_case(agent, bedrock: BedrockService, case: dict[str, Any], use_judge: bo
     return {
         "id": case["id"], "category": case["category"], "critical": bool(case.get("critical")),
         "question": case["question"], "answer": out["answer"], "tool_used": out["tool_used"],
-        "sources": [s.uri.rsplit("/", 1)[-1] for s in out["sources"] if s.uri],
+        "sources": [s.uri.rsplit("/", 1)[-1] + (f" p.{','.join(map(str, s.pages))}" if s.pages else "") for s in out["sources"] if s.uri],
         "requires_human_review": out["requires_human_review"],
         "passed": not failures, "failures": failures, "latency_s": round(latency, 2),
         "grounded": grade.get("grounded"), "helpful": grade.get("helpful"), "judge_reason": grade.get("reason"),
